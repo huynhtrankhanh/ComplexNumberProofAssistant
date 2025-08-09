@@ -1,10 +1,11 @@
 // chinese_theorem_prover.ts
 // TypeScript implementation of the Chinese Theorem Prover (no parser).
-// Recent changes requested by user:
-// - Full support for seeding contexts (both for individual Prover instances and for ProofSession global context).
-// - API methods added: ProofSession.addGlobalFact, ProofSession.seedGlobalContext, Prover.seedContext.
-// - startHave clones the seeded global context so frames immediately see seeded facts.
-// - Updated Usage Example demonstrates seeding and using 反证 with a seeded hypothesis.
+// Ultrathink update: full named rewrite-rule system for 再写 (rewrite) with pattern matching.
+// - Adds a fixed, auditable set of rewrite rules (conj_inv, conj_add, conj_mul, etc.).
+// - 再写 may only use either: a named rewrite rule from the registry, OR an equality fact present in context.
+// - Pattern variables in rules are written as variable names starting with `?` (e.g. ?a, ?b).
+// - Provides robust pattern matching & instantiation with binding consistency checks.
+// - ProofSession still supports seeding contexts and piecemeal commands.
 
 import * as math from 'mathjs';
 
@@ -117,12 +118,8 @@ export const Expr = {
 
 ////////////////////////
 // mathjs conversion: two variants
-// - Opaque: map conj/Re/Im/sqnorm to placeholders (used by 多能)
-// - Real : map conj/Re/Im to math.js functions and expand sqnorm -> a * conj(a) (used by 确定)
 ////////////////////////
-
 const OPAQUE_FUNC_MAP: Record<string, string> = { conj: 'F_CONJ', Re: 'F_RE', Im: 'F_IM', sqnorm: 'F_SQNORM' };
-
 export function exprToMathJSStringOpaque(expr: Expr): string {
   switch (expr.type) {
     case 'var': return expr.name;
@@ -189,6 +186,90 @@ export function collectDenominatorsInExpr(expr: Expr): Expr[] {
 }
 
 ////////////////////////
+// Pattern matching utilities for rewrite rules
+////////////////////////
+
+function isPatternVar(v: VarNode): boolean { return v.name.length > 0 && (v.name[0] === '?' || v.name[0] === '$'); }
+
+// Bindings map: pattern variable name -> Expr
+type Bindings = Record<string, Expr>;
+
+function patternMatch(pattern: Expr, node: Expr, bindings: Bindings): boolean {
+  // if pattern is a meta-variable, bind it
+  if (pattern.type === 'var' && isPatternVar(pattern)) {
+    const key = pattern.name;
+    if (bindings[key]) return exprEquals(bindings[key], node);
+    bindings[key] = deepClone(node);
+    return true;
+  }
+  // otherwise structure must match
+  if (pattern.type !== node.type) return false;
+  if (pattern.type === 'const') return (node as ConstNode).value === (pattern as ConstNode).value;
+  if (pattern.type === 'var') return (pattern as VarNode).name === (node as VarNode).name;
+  if (pattern.type === 'op') {
+    const p = pattern as OpNode; const n = node as OpNode;
+    if (p.op !== n.op) return false; if (p.args.length !== n.args.length) return false;
+    for (let i = 0; i < p.args.length; i++) if (!patternMatch(p.args[i], n.args[i], bindings)) return false;
+    return true;
+  }
+  if (pattern.type === 'func') {
+    const p = pattern as FuncNode; const n = node as FuncNode;
+    if (p.name !== n.name) return false; if (p.args.length !== n.args.length) return false;
+    for (let i = 0; i < p.args.length; i++) if (!patternMatch(p.args[i], n.args[i], bindings)) return false;
+    return true;
+  }
+  return false;
+}
+
+function instantiate(pattern: Expr, bindings: Bindings): Expr {
+  if (pattern.type === 'var' && isPatternVar(pattern)) {
+    const b = bindings[pattern.name];
+    if (!b) throw new Error(`unbound pattern variable ${pattern.name}`);
+    return deepClone(b);
+  }
+  if (pattern.type === 'var' || pattern.type === 'const') return deepClone(pattern);
+  if (pattern.type === 'op') return { type: 'op', op: pattern.op, args: pattern.args.map(a => instantiate(a, bindings)) } as OpNode;
+  return { type: 'func', name: pattern.name, args: pattern.args.map(a => instantiate(a, bindings)) } as FuncNode;
+}
+
+function findPatternOccurrencesInExpr(root: Expr, pattern: Expr): Array<{ path: Path; bindings: Bindings }> {
+  const res: Array<{ path: Path; bindings: Bindings }> = [];
+  function rec(node: Expr, path: Path) {
+    const bindings: Bindings = {};
+    if (patternMatch(pattern, node, bindings)) res.push({ path: path.slice(), bindings });
+    if (node.type === 'op' || node.type === 'func') node.args.forEach((ch, i) => { path.push(i); rec(ch, path); path.pop(); });
+  }
+  rec(root, []);
+  return res;
+}
+
+////////////////////////
+// Default named rewrite rules (full set)
+////////////////////////
+export const DEFAULT_REWRITE_RULES: Record<string, { lhs: Expr; rhs: Expr }> = {
+  // conj (conj a) = a
+  conj_inv: { lhs: Expr.func('conj', Expr.func('conj', Expr.var('?a'))), rhs: Expr.var('?a') },
+  // conj(a + b) = conj a + conj b
+  conj_add: { lhs: Expr.func('conj', Expr.add(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.add(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
+  // conj(a * b) = conj a * conj b
+  conj_mul: { lhs: Expr.func('conj', Expr.mul(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.mul(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
+  // conj(a - b) = conj a - conj b
+  conj_sub: { lhs: Expr.func('conj', Expr.sub(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.sub(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
+  // conj(a / b) = conj a / conj b
+  conj_div: { lhs: Expr.func('conj', Expr.div(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.div(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
+  // conj(-a) = -conj a
+  conj_neg: { lhs: Expr.func('conj', Expr.neg(Expr.var('?a'))), rhs: Expr.neg(Expr.func('conj', Expr.var('?a'))) },
+  // sqnorm a = a * conj a
+  sqnorm_def: { lhs: Expr.func('sqnorm', Expr.var('?a')), rhs: Expr.mul(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))) },
+  // Re a = (a + conj a) / 2
+  re_def: { lhs: Expr.func('Re', Expr.var('?a')), rhs: Expr.div(Expr.add(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
+  // Im a = (a - conj a) / 2
+  im_def: { lhs: Expr.func('Im', Expr.var('?a')), rhs: Expr.div(Expr.sub(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
+  // i * i = -1
+  i_square: { lhs: Expr.mul(Expr.var('i'), Expr.var('i')), rhs: Expr.const(-1) },
+};
+
+////////////////////////
 // Context
 ////////////////////////
 export class Context {
@@ -207,10 +288,12 @@ export class Context {
 export class Prover {
   context: Context;
   logger: (s: string) => void = () => {};
-  constructor(initialFacts: Array<{ name: string; fact: Fact }> = []) { this.context = new Context(); for (const f of initialFacts) this.context.addFact(f.name, f.fact); }
+  rewriteRules: Record<string, { lhs: Expr; rhs: Expr }>; // available rewrite rules
+  constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
+    this.context = new Context(); for (const f of initialFacts) this.context.addFact(f.name, f.fact); this.rewriteRules = rules;
+  }
   setLogger(fn: (s: string) => void) { this.logger = fn; }
 
-  // New: seed context with facts after construction. Optionally overwrite existing names.
   seedContext(initialFacts: Array<{ name: string; fact: Fact }>, overwrite = false): { ok: boolean; message?: string } {
     for (const f of initialFacts) {
       if (!overwrite && this.context.has(f.name)) return { ok: false, message: `name collision: ${f.name}` };
@@ -221,13 +304,15 @@ export class Prover {
   }
 
   have(name: string, fact: Fact, commands?: Command[]): boolean {
-    const sub = new Prover(); sub.context = this.context.clone(); sub.setLogger((s) => this.logger(`[${name}] ${s}`));
+    const sub = new Prover(); sub.context = this.context.clone(); sub.setLogger((s) => this.logger(`[${name}] ${s}`)); sub.rewriteRules = this.rewriteRules;
     const ok = sub._runProofGoal(deepClone(fact), commands || []);
     if (!ok) throw new Error(`Proof failed for ${name}`);
     this.context.addFact(name, deepClone(fact)); this.logger(`Added fact '${name}' to context`); return true;
   }
 
   public runSingleCommandOnState(state: { goal: Fact; context: Context }, cmd: Command): boolean {
+    // ensure sub-prover has access to rules
+    (this as any).rewriteRules = this.rewriteRules;
     return this._runCommand(state, cmd);
   }
 
@@ -318,18 +403,43 @@ export class Prover {
     return true;
   }
 
+  // 再写 now supports either a context equality fact or a named rewrite rule from rewriteRules
   private _cmd_rewrite(state: { goal: Fact; context: Context }, cmd: CmdRewrite): boolean {
-    const f = state.context.getFact(cmd.equalityName);
-    if (!f) { this.logger(`再写: equality not found: ${cmd.equalityName}`); return false; }
-    if (f.kind !== 'eq') { this.logger('再写 expects an equality fact'); return false; }
-    const occA = findOccurrencesInExpr(state.goal.lhs, f.lhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: f.rhs }));
-    const occAonR = findOccurrencesInExpr(state.goal.rhs, f.lhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: f.rhs }));
-    const occB = findOccurrencesInExpr(state.goal.lhs, f.rhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: f.lhs }));
-    const occBonR = findOccurrencesInExpr(state.goal.rhs, f.rhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: f.lhs }));
-    const all = occA.concat(occAonR).concat(occB).concat(occBonR);
-    if (all.length < (cmd.occurrence || 1)) { this.logger('再写: occurrence not found'); return false; }
-    const chosen = all[(cmd.occurrence || 1) - 1]; setAtPathInFact(state.goal, chosen.path, deepClone(chosen.replaceWith));
-    this.logger(`再写 applied at occurrence ${cmd.occurrence}`); return true;
+    const ruleName = cmd.equalityName;
+    const ruleFromContext = state.context.getFact(ruleName);
+    const isContextEq = !!(ruleFromContext && ruleFromContext.kind === 'eq');
+    const ruleFromRegistry = (this.rewriteRules && this.rewriteRules[ruleName]);
+    if (!isContextEq && !ruleFromRegistry) { this.logger(`再写: neither equality fact nor rewrite rule named '${ruleName}' found`); return false; }
+
+    const occurrences: Array<{ path: Path; replaceWith: Expr }> = [];
+
+    // If context equality: previous behavior (find syntactic occurrences of lhs/rhs)
+    if (isContextEq) {
+      const f = ruleFromContext as FactEq;
+      const occA = findOccurrencesInExpr(state.goal.lhs, f.lhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: deepClone(f.rhs) }));
+      const occAonR = findOccurrencesInExpr(state.goal.rhs, f.lhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: deepClone(f.rhs) }));
+      const occB = findOccurrencesInExpr(state.goal.lhs, f.rhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: deepClone(f.lhs) }));
+      const occBonR = findOccurrencesInExpr(state.goal.rhs, f.rhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: deepClone(f.lhs) }));
+      occurrences.push(...occA, ...occAonR, ...occB, ...occBonR);
+    }
+
+    // If rewrite rule from registry: pattern match lhs and rhs with meta-variables
+    if (ruleFromRegistry) {
+      const rule = ruleFromRegistry;
+      // find occurrences of rule.lhs (pattern) -> replace by instantiated rhs
+      const occLHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.lhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
+      const occLHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.lhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
+      // find occurrences of rule.rhs -> replace by instantiated lhs
+      const occRHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.rhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
+      const occRHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.rhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
+      occurrences.push(...occLHS, ...occLHS_R, ...occRHS, ...occRHS_R);
+    }
+
+    if (occurrences.length < (cmd.occurrence || 1)) { this.logger('再写: occurrence not found'); return false; }
+    const chosen = occurrences[(cmd.occurrence || 1) - 1];
+    setAtPathInFact(state.goal, chosen.path, deepClone(chosen.replaceWith));
+    this.logger(`再写 applied at occurrence ${cmd.occurrence} using ${ruleName}`);
+    return true;
   }
 
   private _cmd_reverse(state: { goal: Fact; context: Context }, cmd: CmdReverse): boolean {
@@ -346,8 +456,7 @@ export class Prover {
     try {
       const diff = `(${exprToMathJSStringReal(goal.lhs)}) - (${exprToMathJSStringReal(goal.rhs)})`;
       const s = math.simplify(diff as any);
-      const sStr = s.toString();
-      this.logger(`确定: simplify -> ${sStr}`);
+      const sStr = s.toString(); this.logger(`确定: simplify -> ${sStr}`);
       return sStr === '0' || sStr === '0.0';
     } catch (e) { this.logger('确定 simplify failed: ' + (e as Error).message); return false; }
   }
@@ -377,11 +486,14 @@ export class ProofSession {
   private frames: Map<string, FrameState> = new Map();
   private counter = 0;
   logger: (s: string) => void = () => {};
+  rewriteRules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES;
 
-  constructor(initialFacts: Array<{ name: string; fact: Fact }> = []) { for (const f of initialFacts) this.globalContext.addFact(f.name, f.fact); }
+  constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
+    for (const f of initialFacts) this.globalContext.addFact(f.name, f.fact);
+    this.rewriteRules = rules;
+  }
   setLogger(fn: (s: string) => void) { this.logger = fn; }
 
-  // Add a single global fact. If overwrite=false, will fail on name collision.
   addGlobalFact(name: string, fact: Fact, overwrite = false): { ok: boolean; message?: string } {
     if (!overwrite && this.globalContext.has(name)) return { ok: false, message: `global fact already present: ${name}` };
     if (overwrite) this.globalContext.setFact(name, fact); else this.globalContext.addFact(name, fact);
@@ -389,7 +501,6 @@ export class ProofSession {
     return { ok: true };
   }
 
-  // Seed a batch of facts into the global context. If overwrite=false, will error on first collision.
   seedGlobalContext(initialFacts: Array<{ name: string; fact: Fact }>, overwrite = false): { ok: boolean; message?: string } {
     for (const f of initialFacts) {
       const res = this.addGlobalFact(f.name, f.fact, overwrite);
@@ -411,7 +522,7 @@ export class ProofSession {
   addCommand(frameId: string, cmd: Command): { ok: boolean; message?: string } {
     const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
     if (frame.completed) return { ok: false, message: 'frame already completed' };
-    const runner = new Prover(); runner.setLogger((s) => this.logger(`[frame ${frameId}] ${s}`));
+    const runner = new Prover(); runner.setLogger((s) => this.logger(`[frame ${frameId}] ${s}`)); runner.rewriteRules = this.rewriteRules;
     const state = { goal: frame.goal, context: frame.context };
     const ok = runner.runSingleCommandOnState(state, cmd);
     if (!ok) return { ok: false, message: 'command failed' };
@@ -422,7 +533,7 @@ export class ProofSession {
   finalize(frameId: string): { ok: boolean; message?: string } {
     const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
     if (frame.completed) return { ok: false, message: 'frame already completed' };
-    const prover = new Prover(); prover.setLogger((s) => this.logger(`[finalize ${frameId}] ${s}`));
+    const prover = new Prover(); prover.setLogger((s) => this.logger(`[finalize ${frameId}] ${s}`)); prover.rewriteRules = this.rewriteRules;
     prover.context = frame.context;
     const ok = (prover as any)['_checkGoalProved'] ? (prover as any)['_checkGoalProved'](frame.goal) : false;
     if (!ok) return { ok: false, message: 'goal not yet proved' };
@@ -470,45 +581,24 @@ export function collectVarNames(f: Fact): string[] { const s = new Set<string>()
     npm install mathjs ts-node typescript
     npx ts-node chinese_theorem_prover.ts
 
-  Example: seed global context and run 反证 immediately
-  ----------------------------------------------------
-  import { Expr, ProofSession, Prover } from './chinese_theorem_prover';
+  Example: use a named rewrite rule (conj_inv) to prove conj(conj(z)) = z
+  ---------------------------------------------------------------------
+  import { Expr, ProofSession } from './chinese_theorem_prover';
 
-  const seed = [
-    { name: 'g', fact: Expr.neq(Expr.var('a'), Expr.const(5)) },
-    { name: 'hm', fact: Expr.eq(Expr.var('M'), Expr.div(Expr.add(Expr.var('A'), Expr.var('B')), Expr.const(2))) }
-  ];
-
-  const sess = new ProofSession(seed); // constructor seeds global context
+  const sess = new ProofSession();
   sess.setLogger(console.log);
 
-  // Start a frame with goal: a + 1 ≠ 6
-  const frameId = sess.startHave('main_goal', Expr.neq(Expr.add(Expr.var('a'), Expr.const(1)), Expr.const(6)));
+  const frameId = sess.startHave('conj_inv_proof', Expr.eq(Expr.func('conj', Expr.func('conj', Expr.var('z'))), Expr.var('z')));
 
-  // Because the frame clones global context at start, 'g' is visible inside the frame
-  console.log('global context keys:', sess.getGlobalContextKeys()); // ['g','hm']
+  // apply the named rewrite rule 'conj_inv'
+  console.log('addCommand 再写 (conj_inv):', sess.addCommand(frameId, { cmd: '再写', occurrence: 1, equalityName: 'conj_inv' }));
 
-  // Run 反证 on the seeded hypothesis 'g'
-  const res = sess.addCommand(frameId, { cmd: '反证', hypName: 'g' });
-  console.log('反证 command result:', res);
-
-  // Inspect frame state: 'g' should have been replaced with equality a + 1 = 6, and new goal set to a = 5
-  const state = sess.getFrameState(frameId)!;
-  console.log('frame context keys after 反证:', Object.keys((state.context as any).keys ? state.context.keys() : {}));
-  console.log('frame goal after 反证:', state.goal && JSON.stringify(state.goal));
-
-  // You can now continue with more commands to prove the new equality goal (for example by rewriting, applying known equalities, or starting sub-frames).
-
-  Example: Using Prover.seedContext directly
-  -----------------------------------------
-  const p = new Prover();
-  p.setLogger(console.log);
-  p.seedContext([{ name: 'g', fact: Expr.neq(Expr.var('a'), Expr.const(5)) }]);
-  // Now p.context contains g and you can call p.have(...) or run commands on p.context.
+  // finalize the proof (goal should become z = z and thus be trivially proven)
+  console.log('finalize:', sess.finalize(frameId));
+  console.log('global context keys now:', sess.getGlobalContextKeys());
 */
 
 ////////////////////////
 // Exports
 ////////////////////////
-export default { Expr, Prover, Context, ProofSession };
-
+export default { Expr, Prover, Context, ProofSession, DEFAULT_REWRITE_RULES };
