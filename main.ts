@@ -1,11 +1,12 @@
 // chinese_theorem_prover.ts
 // TypeScript implementation of the Chinese Theorem Prover (no parser).
-// Ultrathink update: Add PROOF SERIALIZATION feature.
-// - ProofSession.serializeFrame(frameId) and serializeAll() produce the original-language
-//   textual proof with `有` blocks and command lines.
-// - Serialization is recursive for nested frames (children are included as nested `有` blocks).
-// - 再写 uses only named rewrite rules or equality facts (no ad-hoc rewriting) — serialized accordingly.
-// - The serializer prints expressions using the original syntax (e.g. `conj (a + b)`, `sqnorm x`).
+// Ultrathink update: Historical command recording + strict insertion-order serialization.
+// - ProofSession maintains a chronological commandHistory capturing every startHave, command execution,
+//   and finalize event. Each record stores resolved snapshots of any referenced facts/expressions
+//   at execution time, so serialization is historically accurate and self-contained.
+// - Serialization places nested `有` at the exact insertion point where they were started.
+// - Serialization collects any referenced-but-unproven facts and emits them as seeded facts at the top,
+//   ensuring the exported proof can be replayed in isolation.
 
 import * as math from 'mathjs';
 
@@ -270,12 +271,28 @@ export class Context {
 }
 
 ////////////////////////
+// Command history records (for strict insertion-order & historical snapshots)
+////////////////////////
+export type RecordKind = 'start_frame' | 'cmd' | 'finalize_frame';
+export interface CommandRecord {
+  kind: RecordKind;
+  frameId: string;
+  frameName?: string; // for start_frame/finalize_frame
+  parentFrameId?: string | null; // for start_frame
+  goal?: Fact; // snapshot for start_frame
+  cmd?: Command; // original command (for kind==='cmd')
+  // resolved snapshots capture any referenced facts/expressions at execution time
+  resolved?: Record<string, any>;
+  ts: number;
+}
+
+////////////////////////
 // Prover (core command implementations)
 ////////////////////////
 export class Prover {
   context: Context;
   logger: (s: string) => void = () => {};
-  rewriteRules: Record<string, { lhs: Expr; rhs: Expr }>; // available rewrite rules
+  rewriteRules: Record<string, { lhs: Expr; rhs: Expr }>;
   constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
     this.context = new Context(); for (const f of initialFacts) this.context.addFact(f.name, f.fact); this.rewriteRules = rules;
   }
@@ -389,7 +406,6 @@ export class Prover {
     return true;
   }
 
-  // 再写 now supports either a context equality fact or a named rewrite rule from rewriteRules
   private _cmd_rewrite(state: { goal: Fact; context: Context }, cmd: CmdRewrite): boolean {
     const ruleName = cmd.equalityName;
     const ruleFromContext = state.context.getFact(ruleName);
@@ -458,7 +474,7 @@ export class Prover {
 }
 
 ////////////////////////
-// ProofSession & Frames: Fluent Piecemeal RPC (with seeding APIs)
+// ProofSession & Frames: Fluent Piecemeal RPC (with historical command recording)
 ////////////////////////
 
 export interface FrameState { id: string; name: string; goal: Fact; context: Context; commands: Command[]; completed: boolean; parentFrameId?: string | null; }
@@ -469,6 +485,9 @@ export class ProofSession {
   private counter = 0;
   logger: (s: string) => void = () => {};
   rewriteRules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES;
+
+  // chronological command history
+  public commandHistory: CommandRecord[] = [];
 
   constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
     for (const f of initialFacts) this.globalContext.addFact(f.name, f.fact);
@@ -491,6 +510,7 @@ export class ProofSession {
     return { ok: true };
   }
 
+  // startHave now records a start_frame record in the global chronological history
   startHave(name: string, goal: Fact, parentFrameId?: string): string {
     const id = `frame_${++this.counter}`;
     const parentCtx = parentFrameId ? (this.frames.get(parentFrameId)?.context ?? this.globalContext.clone()) : this.globalContext.clone();
@@ -498,20 +518,71 @@ export class ProofSession {
     const frame: FrameState = { id, name, goal: deepClone(goal), context: ctxClone, commands: [], completed: false, parentFrameId: parentFrameId ?? null };
     this.frames.set(id, frame);
     this.logger(`Started frame ${id} ('${name}')`);
+    // record start_frame with snapshot of the goal
+    this.commandHistory.push({ kind: 'start_frame', frameId: id, frameName: name, parentFrameId: parentFrameId ?? null, goal: deepClone(goal), ts: Date.now() });
     return id;
   }
 
+  // addCommand records a cmd record with resolved snapshots taken BEFORE executing the command,
+  // then runs the command (mutating the frame state) and returns status.
   addCommand(frameId: string, cmd: Command): { ok: boolean; message?: string } {
     const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
     if (frame.completed) return { ok: false, message: 'frame already completed' };
-    const runner = new Prover(); runner.setLogger((s) => this.logger(`[frame ${frameId}] ${s}`)); runner.rewriteRules = this.rewriteRules;
+
+    // prepare resolved snapshot depending on command kind
+    const resolved: Record<string, any> = {};
+    // snapshot current goal of the frame
+    resolved.preGoal = deepClone(frame.goal);
+
+    try {
+      if (cmd.cmd === '不利') {
+        const c = cmd as CmdBuli;
+        const hyp = frame.context.getFact(c.hypothesis);
+        if (!hyp) return { ok: false, message: `hypothesis not found: ${c.hypothesis}` };
+        resolved.newName = c.newName;
+        resolved.component = deepClone(c.component);
+        resolved.hypothesisName = c.hypothesis;
+        resolved.hypothesisFact = deepClone(hyp);
+      } else if (cmd.cmd === '反证') {
+        const c = cmd as CmdFanzheng;
+        const hyp = frame.context.getFact(c.hypName);
+        if (!hyp) return { ok: false, message: `hypothesis not found: ${c.hypName}` };
+        resolved.hypName = c.hypName;
+        resolved.hypFactBefore = deepClone(hyp);
+        resolved.goalBefore = deepClone(frame.goal);
+      } else if (cmd.cmd === '多能') {
+        const c = cmd as CmdDuoneng;
+        resolved.denomProofs = (c.denomProofs || []).map((n) => ({ name: n, fact: frame.context.getFact(n) ? deepClone(frame.context.getFact(n)) : null }));
+      } else if (cmd.cmd === '再写') {
+        const c = cmd as CmdRewrite;
+        resolved.equalityName = c.equalityName;
+        const f = frame.context.getFact(c.equalityName);
+        if (f && f.kind === 'eq') resolved.equalitySnapshot = deepClone(f);
+        else if (this.rewriteRules[c.equalityName]) resolved.rewriteRule = deepClone(this.rewriteRules[c.equalityName]);
+      } else if (cmd.cmd === '重反') {
+        const c = cmd as CmdReverse;
+        const f = frame.context.getFact(c.oldName);
+        if (!f) return { ok: false, message: `old equality not found: ${c.oldName}` };
+        resolved.oldName = c.oldName; resolved.oldFact = deepClone(f); resolved.newName = c.newName;
+      } else if (cmd.cmd === '确定') {
+        resolved.goalBefore = deepClone(frame.goal);
+      }
+    } catch (e) { return { ok: false, message: 'snapshot failed: ' + (e as Error).message }; }
+
+    // run the command via a Prover instance (which will mutate frame.context and frame.goal)
+    const runner = new Prover(); runner.setLogger((s) => this.logger(`[frame ${frameId}] ${s}`));
+    runner.rewriteRules = this.rewriteRules;
     const state = { goal: frame.goal, context: frame.context };
     const ok = runner.runSingleCommandOnState(state, cmd);
     if (!ok) return { ok: false, message: 'command failed' };
+
+    // record the command with the resolved snapshot AFTER successful execution
+    this.commandHistory.push({ kind: 'cmd', frameId, cmd: deepClone(cmd), resolved, ts: Date.now() });
     frame.commands.push(deepClone(cmd));
     return { ok: true };
   }
 
+  // finalize records a finalize_frame record and then propagates the proven fact into parent/global context
   finalize(frameId: string): { ok: boolean; message?: string } {
     const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
     if (frame.completed) return { ok: false, message: 'frame already completed' };
@@ -519,6 +590,9 @@ export class ProofSession {
     prover.context = frame.context;
     const ok = (prover as any)['_checkGoalProved'] ? (prover as any)['_checkGoalProved'](frame.goal) : false;
     if (!ok) return { ok: false, message: 'goal not yet proved' };
+    // record finalize with a snapshot of the goal
+    this.commandHistory.push({ kind: 'finalize_frame', frameId, frameName: frame.name, goal: deepClone(frame.goal), ts: Date.now() });
+
     if (frame.parentFrameId) {
       const parent = this.frames.get(frame.parentFrameId);
       if (!parent) return { ok: false, message: 'parent frame not found' };
@@ -536,10 +610,9 @@ export class ProofSession {
   getGlobalContextKeys(): string[] { return this.globalContext.keys(); }
 
   ////////////////////////
-  // PROOF SERIALIZATION
+  // PROOF SERIALIZATION (strict insertion-order + historical snapshots)
   ////////////////////////
 
-  // Convert expression back into the original textual syntax used by the language.
   private exprToOriginalString(e: Expr, parentPrec = 0): string {
     const PREC: Record<string, number> = { add: 1, sub: 1, mul: 2, div: 2, pow: 3, neg: 3, func: 4, var: 4, const: 4 };
     function wrap(s: string, childPrec: number) {
@@ -550,8 +623,7 @@ export class ProofSession {
     if (e.type === 'func') {
       const arg = e.args[0];
       const argStr = this.exprToOriginalString(arg, PREC.func);
-      // prefer the form: name (arg) when arg is not atomic
-      const needParens = arg.type === 'op' || arg.type === 'func' && PREC.func > PREC.func;
+      const needParens = arg.type === 'op';
       return `${e.name} ${needParens ? '(' + argStr + ')' : argStr}`;
     }
     if (e.type === 'op') {
@@ -586,7 +658,11 @@ export class ProofSession {
 
   private factToOriginalString(f: Fact): string { return f.kind === 'eq' ? `${this.exprToOriginalString(f.lhs)} = ${this.exprToOriginalString(f.rhs)}` : `${this.exprToOriginalString(f.lhs)} ≠ ${this.exprToOriginalString(f.rhs)}`; }
 
-  private commandToOriginalString(cmd: Command, frame: FrameState): string {
+  // Render a command record using resolved snapshots so the output is historically accurate
+  private renderCommandRecord(rec: CommandRecord): string {
+    if (rec.kind !== 'cmd' || !rec.cmd) return '';
+    const cmd = rec.cmd;
+    const r = rec.resolved || {};
     switch (cmd.cmd) {
       case '多能': {
         const d = (cmd as CmdDuoneng).denomProofs || [];
@@ -594,67 +670,137 @@ export class ProofSession {
       }
       case '不利': {
         const c = cmd as CmdBuli;
-        const hyp = frame.context.getFact(c.hypothesis);
-        const rhs = hyp ? this.exprToOriginalString(hyp.rhs) : '???';
-        return `有 ${c.newName} : ${this.exprToOriginalString(c.component)} ≠ ${rhs} 是 不利 ${c.hypothesis}`;
+        const rhsStr = r.hypothesisFact ? this.exprToOriginalString(r.hypothesisFact.rhs) : '???';
+        return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ ${rhsStr} 是 不利 ${c.hypothesis}`;
       }
       case '反证': return `反证 ${(cmd as CmdFanzheng).hypName}`;
       case '再写': {
-        const r = cmd as CmdRewrite; const occ = r.occurrence || 1; return `再写 在 ${occ} ${r.equalityName}`;
+        const rcmd = cmd as CmdRewrite; const occ = rcmd.occurrence || 1; return `再写 在 ${occ} ${rcmd.equalityName}`;
       }
       case '重反': {
-        const r = cmd as CmdReverse; return `重反 ${r.oldName} 成 ${r.newName}`;
+        const rcmd = cmd as CmdReverse; return `重反 ${rcmd.oldName} 成 ${rcmd.newName}`;
       }
       case '确定': return '确定';
       default: return `// unknown command: ${JSON.stringify(cmd)}`;
     }
   }
 
-  // Serialize a single frame (with nested child frames placed before the commands)
-  serializeFrame(frameId: string): string {
-    const frame = this.frames.get(frameId);
-    if (!frame) throw new Error(`frame not found: ${frameId}`);
-    // collect child frames (direct children)
-    const children = Array.from(this.frames.values()).filter(f => f.parentFrameId === frameId).sort((a, b) => parseInt(a.id.split('_')[1]) - parseInt(b.id.split('_')[1]));
-
-    function indentLines(s: string, level = 1) { return s.split('
-').map(l => (l.length ? '  '.repeat(level) + l : l)).join('
-'); }
-
-    let out = '';
-    // include child frames first (nested `有` blocks)
-    for (const ch of children) {
-      out += indentLines(this.serializeFrame(ch.id), 1) + '
-';
+  // Build earliest finalize index map and collect referenced facts that need seeding
+  private analyzeHistoryForSeeding(): { earliestProveIndex: Record<string, number>; referencedFacts: Record<string, Fact> } {
+    const earliestProveIndex: Record<string, number> = {};
+    for (let i = 0; i < this.commandHistory.length; i++) {
+      const rec = this.commandHistory[i];
+      if (rec.kind === 'finalize_frame' && rec.frameName) {
+        if (earliestProveIndex[rec.frameName] === undefined) earliestProveIndex[rec.frameName] = i;
+      }
     }
-
-    // Then the frame itself
-    out += `有 ${frame.name} : ${this.factToOriginalString(frame.goal)} 是` + '
-';
-    for (const cmd of frame.commands) {
-      out += '  ' + this.commandToOriginalString(cmd, frame) + '
-';
+    const referencedFacts: Record<string, Fact> = {};
+    for (let i = 0; i < this.commandHistory.length; i++) {
+      const rec = this.commandHistory[i];
+      if (rec.kind === 'cmd' && rec.resolved) {
+        // check common places where hypothesis/fact names are referenced
+        if (rec.resolved.hypothesisName && rec.resolved.hypothesisFact) {
+          const n = rec.resolved.hypothesisName as string;
+          const proveIdx = earliestProveIndex[n];
+          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.hypothesisFact);
+        }
+        if (rec.resolved.hypName && rec.resolved.hypFactBefore) {
+          const n = rec.resolved.hypName as string;
+          const proveIdx = earliestProveIndex[n];
+          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.hypFactBefore);
+        }
+        if (rec.resolved.denomProofs && Array.isArray(rec.resolved.denomProofs)) {
+          for (const d of rec.resolved.denomProofs) {
+            if (d && d.name && d.fact) {
+              const n = d.name as string; const f = d.fact as Fact | null;
+              const proveIdx = earliestProveIndex[n];
+              if (f && (proveIdx === undefined || proveIdx > i)) referencedFacts[n] = deepClone(f);
+            }
+          }
+        }
+        if (rec.resolved.equalityName && rec.resolved.equalitySnapshot) {
+          const n = rec.resolved.equalityName as string;
+          const proveIdx = earliestProveIndex[n];
+          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.equalitySnapshot);
+        }
+        if (rec.resolved.oldName && rec.resolved.oldFact) {
+          const n = rec.resolved.oldName as string; const f = rec.resolved.oldFact as Fact;
+          const proveIdx = earliestProveIndex[n];
+          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(f);
+        }
+      }
     }
-    return out.trimEnd();
+    // Also include originally seeded global facts (they stand as seeds)
+    for (const k of this.globalContext.keys()) referencedFacts[k] = deepClone(this.globalContext.getFact(k)!);
+    return { earliestProveIndex, referencedFacts };
   }
 
-  // Serialize everything: seeded global facts and all top-level frames
+  // Serialize the entire session as a self-contained proof script with strict insertion order
   serializeAll(): string {
-    let out = '';
-    // Global seeded facts
-    for (const k of this.globalContext.keys()) {
-      const f = this.globalContext.getFact(k)!;
-      // mark as seeded (no proof attached in session)
-      out += `有 ${k} : ${this.factToOriginalString(f)} 是 // seeded` + '
-';
+    const hist = this.commandHistory;
+    const { earliestProveIndex, referencedFacts } = this.analyzeHistoryForSeeding();
+
+    // We'll determine which referenced facts must be emitted at top as seeds: those that are never proved before their first use.
+    const seedToEmit: Record<string, Fact> = {};
+    // compute firstUseIndex for each referenced fact
+    const firstUseIndex: Record<string, number> = {};
+    for (let i = 0; i < hist.length; i++) {
+      const rec = hist[i];
+      if (rec.kind === 'cmd' && rec.resolved) {
+        for (const key of ['hypothesisName', 'hypName', 'equalityName', 'oldName']) {
+          const n = rec.resolved[key]; if (!n) continue; const name = n as string;
+          if (firstUseIndex[name] === undefined) firstUseIndex[name] = i;
+        }
+        if (rec.resolved.denomProofs) for (const d of rec.resolved.denomProofs) { if (d && d.name) { const name = d.name as string; if (firstUseIndex[name] === undefined) firstUseIndex[name] = i; } }
+      }
     }
-    // Top-level frames (parentFrameId null)
-    const topFrames = Array.from(this.frames.values()).filter(f => !f.parentFrameId).sort((a, b) => parseInt(a.id.split('_')[1]) - parseInt(b.id.split('_')[1]));
-    for (const fr of topFrames) {
-      out += this.serializeFrame(fr.id) + '
-';
+    for (const [name, fact] of Object.entries(referencedFacts)) {
+      const firstUse = firstUseIndex[name];
+      const provedIdx = earliestProveIndex[name];
+      if (firstUse !== undefined && (provedIdx === undefined || provedIdx > firstUse)) seedToEmit[name] = deepClone(fact);
+      // also include any globalContext seeds even if they are proved later to be explicit
+      if (this.globalContext.has(name)) seedToEmit[name] = deepClone(this.globalContext.getFact(name)!);
     }
-    return out.trimEnd();
+
+    // Build textual output by streaming history, opening/closing frames according to start/finalize records.
+    const lines: string[] = [];
+    // emit seeds first
+    for (const name of Object.keys(seedToEmit)) {
+      const f = seedToEmit[name];
+      lines.push(`有 ${name} : ${this.factToOriginalString(f)} 是 // seeded`);
+    }
+
+    const indentUnit = '  ';
+    const stack: string[] = []; // stack of frameIds currently open
+    for (let i = 0; i < hist.length; i++) {
+      const rec = hist[i];
+      if (rec.kind === 'start_frame') {
+        // start a new block in-place
+        const header = `有 ${rec.frameName} : ${this.factToOriginalString(rec.goal!)} 是`;
+        const indent = indentUnit.repeat(stack.length);
+        lines.push(indent + header);
+        stack.push(rec.frameId);
+      } else if (rec.kind === 'cmd') {
+        // command inside the current top frame
+        const indent = indentUnit.repeat(stack.length);
+        const rendered = this.renderCommandRecord(rec);
+        lines.push(indent + rendered);
+      } else if (rec.kind === 'finalize_frame') {
+        // close the current frame (we assume finalize corresponds to top-of-stack frame)
+        if (stack.length && stack[stack.length - 1] === rec.frameId) {
+          stack.pop();
+        } else {
+          // finalize of a non-top frame — find and remove it to keep structure consistent
+          const idx = stack.lastIndexOf(rec.frameId);
+          if (idx >= 0) stack.splice(idx, 1);
+        }
+      }
+    }
+    // close any remaining open frames (unfinalized) — we simply pop them
+    while (stack.length) stack.pop();
+
+    return lines.join('
+');
   }
 }
 
@@ -681,7 +827,7 @@ export function collectVarNames(f: Fact): string[] { const s = new Set<string>()
 // Usage Example (runnable with ts-node)
 ////////////////////////
 /*
-  Example: seed global context and run 反证 then serialize
+  Example: seed global context and run 反证 then serialize (insertion-order + history)
 
   import { Expr, ProofSession } from './chinese_theorem_prover';
   const sess = new ProofSession([
@@ -690,14 +836,14 @@ export function collectVarNames(f: Fact): string[] { const s = new Set<string>()
   sess.setLogger(console.log);
   const frameId = sess.startHave('main_goal', Expr.neq(Expr.add(Expr.var('a'), Expr.const(1)), Expr.const(6)));
   sess.addCommand(frameId, { cmd: '反证', hypName: 'g' });
+  // start subframe in-place
+  const childId = sess.startHave('subgoal', Expr.eq(Expr.var('a'), Expr.const(5)), frameId);
+  sess.addCommand(childId, { cmd: '确定' });
+  sess.finalize(childId);
+  sess.finalize(frameId);
 
   console.log('Serialized proof:
-' + sess.serializeFrame(frameId));
-
-  // Output will look like:
-  // 有 main_goal : a + 1 ≠ 6 是
-  //   反证 g
-  // After 反证 the frame goal becomes `a = 5` and the context contains `g: a + 1 = 6`.
+' + sess.serializeAll());
 */
 
 ////////////////////////
