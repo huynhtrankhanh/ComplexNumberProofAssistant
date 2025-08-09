@@ -1,11 +1,11 @@
 // chinese_theorem_prover.ts
 // TypeScript implementation of the Chinese Theorem Prover (no parser).
-// Ultrathink update: full named rewrite-rule system for 再写 (rewrite) with pattern matching.
-// - Adds a fixed, auditable set of rewrite rules (conj_inv, conj_add, conj_mul, etc.).
-// - 再写 may only use either: a named rewrite rule from the registry, OR an equality fact present in context.
-// - Pattern variables in rules are written as variable names starting with `?` (e.g. ?a, ?b).
-// - Provides robust pattern matching & instantiation with binding consistency checks.
-// - ProofSession still supports seeding contexts and piecemeal commands.
+// Ultrathink update: Add PROOF SERIALIZATION feature.
+// - ProofSession.serializeFrame(frameId) and serializeAll() produce the original-language
+//   textual proof with `有` blocks and command lines.
+// - Serialization is recursive for nested frames (children are included as nested `有` blocks).
+// - 再写 uses only named rewrite rules or equality facts (no ad-hoc rewriting) — serialized accordingly.
+// - The serializer prints expressions using the original syntax (e.g. `conj (a + b)`, `sqnorm x`).
 
 import * as math from 'mathjs';
 
@@ -191,18 +191,15 @@ export function collectDenominatorsInExpr(expr: Expr): Expr[] {
 
 function isPatternVar(v: VarNode): boolean { return v.name.length > 0 && (v.name[0] === '?' || v.name[0] === '$'); }
 
-// Bindings map: pattern variable name -> Expr
 type Bindings = Record<string, Expr>;
 
 function patternMatch(pattern: Expr, node: Expr, bindings: Bindings): boolean {
-  // if pattern is a meta-variable, bind it
   if (pattern.type === 'var' && isPatternVar(pattern)) {
     const key = pattern.name;
     if (bindings[key]) return exprEquals(bindings[key], node);
     bindings[key] = deepClone(node);
     return true;
   }
-  // otherwise structure must match
   if (pattern.type !== node.type) return false;
   if (pattern.type === 'const') return (node as ConstNode).value === (pattern as ConstNode).value;
   if (pattern.type === 'var') return (pattern as VarNode).name === (node as VarNode).name;
@@ -244,28 +241,18 @@ function findPatternOccurrencesInExpr(root: Expr, pattern: Expr): Array<{ path: 
 }
 
 ////////////////////////
-// Default named rewrite rules (full set)
+// Default named rewrite rules
 ////////////////////////
 export const DEFAULT_REWRITE_RULES: Record<string, { lhs: Expr; rhs: Expr }> = {
-  // conj (conj a) = a
   conj_inv: { lhs: Expr.func('conj', Expr.func('conj', Expr.var('?a'))), rhs: Expr.var('?a') },
-  // conj(a + b) = conj a + conj b
   conj_add: { lhs: Expr.func('conj', Expr.add(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.add(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
-  // conj(a * b) = conj a * conj b
   conj_mul: { lhs: Expr.func('conj', Expr.mul(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.mul(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
-  // conj(a - b) = conj a - conj b
   conj_sub: { lhs: Expr.func('conj', Expr.sub(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.sub(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
-  // conj(a / b) = conj a / conj b
   conj_div: { lhs: Expr.func('conj', Expr.div(Expr.var('?a'), Expr.var('?b'))), rhs: Expr.div(Expr.func('conj', Expr.var('?a')), Expr.func('conj', Expr.var('?b'))) },
-  // conj(-a) = -conj a
   conj_neg: { lhs: Expr.func('conj', Expr.neg(Expr.var('?a'))), rhs: Expr.neg(Expr.func('conj', Expr.var('?a'))) },
-  // sqnorm a = a * conj a
   sqnorm_def: { lhs: Expr.func('sqnorm', Expr.var('?a')), rhs: Expr.mul(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))) },
-  // Re a = (a + conj a) / 2
   re_def: { lhs: Expr.func('Re', Expr.var('?a')), rhs: Expr.div(Expr.add(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
-  // Im a = (a - conj a) / 2
   im_def: { lhs: Expr.func('Im', Expr.var('?a')), rhs: Expr.div(Expr.sub(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
-  // i * i = -1
   i_square: { lhs: Expr.mul(Expr.var('i'), Expr.var('i')), rhs: Expr.const(-1) },
 };
 
@@ -311,7 +298,6 @@ export class Prover {
   }
 
   public runSingleCommandOnState(state: { goal: Fact; context: Context }, cmd: Command): boolean {
-    // ensure sub-prover has access to rules
     (this as any).rewriteRules = this.rewriteRules;
     return this._runCommand(state, cmd);
   }
@@ -413,7 +399,6 @@ export class Prover {
 
     const occurrences: Array<{ path: Path; replaceWith: Expr }> = [];
 
-    // If context equality: previous behavior (find syntactic occurrences of lhs/rhs)
     if (isContextEq) {
       const f = ruleFromContext as FactEq;
       const occA = findOccurrencesInExpr(state.goal.lhs, f.lhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: deepClone(f.rhs) }));
@@ -423,13 +408,10 @@ export class Prover {
       occurrences.push(...occA, ...occAonR, ...occB, ...occBonR);
     }
 
-    // If rewrite rule from registry: pattern match lhs and rhs with meta-variables
     if (ruleFromRegistry) {
       const rule = ruleFromRegistry;
-      // find occurrences of rule.lhs (pattern) -> replace by instantiated rhs
       const occLHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.lhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
       const occLHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.lhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
-      // find occurrences of rule.rhs -> replace by instantiated lhs
       const occRHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.rhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
       const occRHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.rhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
       occurrences.push(...occLHS, ...occLHS_R, ...occRHS, ...occRHS_R);
@@ -552,6 +534,128 @@ export class ProofSession {
   getFrameState(frameId: string): FrameState | undefined { const f = this.frames.get(frameId); return f ? deepClone(f) : undefined; }
   listFrames(): string[] { return Array.from(this.frames.keys()); }
   getGlobalContextKeys(): string[] { return this.globalContext.keys(); }
+
+  ////////////////////////
+  // PROOF SERIALIZATION
+  ////////////////////////
+
+  // Convert expression back into the original textual syntax used by the language.
+  private exprToOriginalString(e: Expr, parentPrec = 0): string {
+    const PREC: Record<string, number> = { add: 1, sub: 1, mul: 2, div: 2, pow: 3, neg: 3, func: 4, var: 4, const: 4 };
+    function wrap(s: string, childPrec: number) {
+      return childPrec < parentPrec ? `(${s})` : s;
+    }
+    if (e.type === 'var') return e.name;
+    if (e.type === 'const') return String(e.value);
+    if (e.type === 'func') {
+      const arg = e.args[0];
+      const argStr = this.exprToOriginalString(arg, PREC.func);
+      // prefer the form: name (arg) when arg is not atomic
+      const needParens = arg.type === 'op' || arg.type === 'func' && PREC.func > PREC.func;
+      return `${e.name} ${needParens ? '(' + argStr + ')' : argStr}`;
+    }
+    if (e.type === 'op') {
+      const p = PREC[e.op];
+      if (e.op === 'add' || e.op === 'mul') {
+        const joiner = e.op === 'add' ? ' + ' : ' * ';
+        const parts = e.args.map(a => this.exprToOriginalString(a, p));
+        return wrap(parts.join(joiner), p);
+      }
+      if (e.op === 'sub') {
+        const a0 = this.exprToOriginalString(e.args[0], p);
+        const a1 = this.exprToOriginalString(e.args[1], p + 1);
+        return wrap(`${a0} - ${a1}`, p);
+      }
+      if (e.op === 'div') {
+        const a0 = this.exprToOriginalString(e.args[0], p);
+        const a1 = this.exprToOriginalString(e.args[1], p + 1);
+        return wrap(`${a0} / ${a1}`, p);
+      }
+      if (e.op === 'neg') {
+        const a0 = this.exprToOriginalString(e.args[0], p);
+        return wrap(`-${a0}`, p);
+      }
+      if (e.op === 'pow') {
+        const a0 = this.exprToOriginalString(e.args[0], p);
+        const a1 = this.exprToOriginalString(e.args[1], p);
+        return wrap(`${a0} ^ ${a1}`, p);
+      }
+    }
+    return JSON.stringify(e);
+  }
+
+  private factToOriginalString(f: Fact): string { return f.kind === 'eq' ? `${this.exprToOriginalString(f.lhs)} = ${this.exprToOriginalString(f.rhs)}` : `${this.exprToOriginalString(f.lhs)} ≠ ${this.exprToOriginalString(f.rhs)}`; }
+
+  private commandToOriginalString(cmd: Command, frame: FrameState): string {
+    switch (cmd.cmd) {
+      case '多能': {
+        const d = (cmd as CmdDuoneng).denomProofs || [];
+        return d.length ? `多能 [${d.join(', ')}]` : '多能';
+      }
+      case '不利': {
+        const c = cmd as CmdBuli;
+        const hyp = frame.context.getFact(c.hypothesis);
+        const rhs = hyp ? this.exprToOriginalString(hyp.rhs) : '???';
+        return `有 ${c.newName} : ${this.exprToOriginalString(c.component)} ≠ ${rhs} 是 不利 ${c.hypothesis}`;
+      }
+      case '反证': return `反证 ${(cmd as CmdFanzheng).hypName}`;
+      case '再写': {
+        const r = cmd as CmdRewrite; const occ = r.occurrence || 1; return `再写 在 ${occ} ${r.equalityName}`;
+      }
+      case '重反': {
+        const r = cmd as CmdReverse; return `重反 ${r.oldName} 成 ${r.newName}`;
+      }
+      case '确定': return '确定';
+      default: return `// unknown command: ${JSON.stringify(cmd)}`;
+    }
+  }
+
+  // Serialize a single frame (with nested child frames placed before the commands)
+  serializeFrame(frameId: string): string {
+    const frame = this.frames.get(frameId);
+    if (!frame) throw new Error(`frame not found: ${frameId}`);
+    // collect child frames (direct children)
+    const children = Array.from(this.frames.values()).filter(f => f.parentFrameId === frameId).sort((a, b) => parseInt(a.id.split('_')[1]) - parseInt(b.id.split('_')[1]));
+
+    function indentLines(s: string, level = 1) { return s.split('
+').map(l => (l.length ? '  '.repeat(level) + l : l)).join('
+'); }
+
+    let out = '';
+    // include child frames first (nested `有` blocks)
+    for (const ch of children) {
+      out += indentLines(this.serializeFrame(ch.id), 1) + '
+';
+    }
+
+    // Then the frame itself
+    out += `有 ${frame.name} : ${this.factToOriginalString(frame.goal)} 是` + '
+';
+    for (const cmd of frame.commands) {
+      out += '  ' + this.commandToOriginalString(cmd, frame) + '
+';
+    }
+    return out.trimEnd();
+  }
+
+  // Serialize everything: seeded global facts and all top-level frames
+  serializeAll(): string {
+    let out = '';
+    // Global seeded facts
+    for (const k of this.globalContext.keys()) {
+      const f = this.globalContext.getFact(k)!;
+      // mark as seeded (no proof attached in session)
+      out += `有 ${k} : ${this.factToOriginalString(f)} 是 // seeded` + '
+';
+    }
+    // Top-level frames (parentFrameId null)
+    const topFrames = Array.from(this.frames.values()).filter(f => !f.parentFrameId).sort((a, b) => parseInt(a.id.split('_')[1]) - parseInt(b.id.split('_')[1]));
+    for (const fr of topFrames) {
+      out += this.serializeFrame(fr.id) + '
+';
+    }
+    return out.trimEnd();
+  }
 }
 
 ////////////////////////
@@ -577,25 +681,23 @@ export function collectVarNames(f: Fact): string[] { const s = new Set<string>()
 // Usage Example (runnable with ts-node)
 ////////////////////////
 /*
-  Steps to run:
-    npm install mathjs ts-node typescript
-    npx ts-node chinese_theorem_prover.ts
+  Example: seed global context and run 反证 then serialize
 
-  Example: use a named rewrite rule (conj_inv) to prove conj(conj(z)) = z
-  ---------------------------------------------------------------------
   import { Expr, ProofSession } from './chinese_theorem_prover';
-
-  const sess = new ProofSession();
+  const sess = new ProofSession([
+    { name: 'g', fact: Expr.neq(Expr.var('a'), Expr.const(5)) }
+  ]);
   sess.setLogger(console.log);
+  const frameId = sess.startHave('main_goal', Expr.neq(Expr.add(Expr.var('a'), Expr.const(1)), Expr.const(6)));
+  sess.addCommand(frameId, { cmd: '反证', hypName: 'g' });
 
-  const frameId = sess.startHave('conj_inv_proof', Expr.eq(Expr.func('conj', Expr.func('conj', Expr.var('z'))), Expr.var('z')));
+  console.log('Serialized proof:
+' + sess.serializeFrame(frameId));
 
-  // apply the named rewrite rule 'conj_inv'
-  console.log('addCommand 再写 (conj_inv):', sess.addCommand(frameId, { cmd: '再写', occurrence: 1, equalityName: 'conj_inv' }));
-
-  // finalize the proof (goal should become z = z and thus be trivially proven)
-  console.log('finalize:', sess.finalize(frameId));
-  console.log('global context keys now:', sess.getGlobalContextKeys());
+  // Output will look like:
+  // 有 main_goal : a + 1 ≠ 6 是
+  //   反证 g
+  // After 反证 the frame goal becomes `a = 5` and the context contains `g: a + 1 = 6`.
 */
 
 ////////////////////////
