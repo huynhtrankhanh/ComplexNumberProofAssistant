@@ -132,7 +132,7 @@ export function exprToMathJSStringOpaque(expr: Expr): string {
       if (expr.op === 'div') return `(${exprToMathJSStringOpaque(expr.args[0])} / ${exprToMathJSStringOpaque(expr.args[1])})`;
       if (expr.op === 'neg') return `(-${exprToMathJSStringOpaque(expr.args[0])})`;
       if (expr.op === 'pow') return `(${exprToMathJSStringOpaque(expr.args[0])} ^ ${exprToMathJSStringOpaque(expr.args[1])})`;
-      break;
+      return ((x: never): string => x)(expr.op);
     }
     case 'func': {
       const fname = OPAQUE_FUNC_MAP[expr.name] || expr.name;
@@ -152,7 +152,7 @@ export function exprToMathJSStringReal(expr: Expr): string {
       if (expr.op === 'div') return `(${exprToMathJSStringReal(expr.args[0])} / ${exprToMathJSStringReal(expr.args[1])})`;
       if (expr.op === 'neg') return `(-${exprToMathJSStringReal(expr.args[0])})`;
       if (expr.op === 'pow') return `(${exprToMathJSStringReal(expr.args[0])} ^ ${exprToMathJSStringReal(expr.args[1])})`;
-      break;
+      return ((x: never): string => x)(expr.op);
     }
     case 'func': {
       const argStrs = expr.args.map(exprToMathJSStringReal);
@@ -799,8 +799,7 @@ export class ProofSession {
     // close any remaining open frames (unfinalized) — we simply pop them
     while (stack.length) stack.pop();
 
-    return lines.join('
-');
+    return lines.join('\n');
   }
 }
 
