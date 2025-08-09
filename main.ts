@@ -841,8 +841,7 @@ export function collectVarNames(f: Fact): string[] { const s = new Set<string>()
   sess.finalize(childId);
   sess.finalize(frameId);
 
-  console.log('Serialized proof:
-' + sess.serializeAll());
+  console.log('Serialized proof:\n' + sess.serializeAll());
 */
 
 ////////////////////////
