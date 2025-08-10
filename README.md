@@ -1,4 +1,5 @@
 # Chinese Theorem Prover MCP Server
+![](architecture.svg)
 
 An MCP (Model Context Protocol) server providing access to a mathematical theorem prover that uses Chinese command names. This system allows formal mathematical proofs through algebraic manipulation and logical reasoning.
 
