@@ -121,16 +121,12 @@ function canProveNonZero(expr: Expr, component: Expr): boolean {
     } else if (expr.op === 'neg') {
       // If -x ≠ 0, then x ≠ 0
       return canProveNonZero(expr.args[0], component);
-    } else if (expr.op === 'pow') {
-      // If x^n ≠ 0, then x ≠ 0 (assuming n is not 0)
-      // For simplicity, we'll check the base
-      return canProveNonZero(expr.args[0], component);
     }
     // For add/sub, we can't deduce individual terms are non-zero
   } else if (expr.type === 'func') {
     // For certain functions, we might be able to deduce non-zero
     // For now, we'll be conservative
-    if (expr.name === 'sqnorm') {
+    if (expr.name === 'sqnorm' || expr.name === 'Re' || expr.name === 'Im' || expr.name === 'conj') {
       // If sqnorm(x) ≠ 0, then x ≠ 0
       return canProveNonZero(expr.args[0], component);
     }
