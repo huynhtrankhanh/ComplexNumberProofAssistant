@@ -1,7 +1,31 @@
 {
+  "name": "chinese-theorem-prover-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for the Chinese Theorem Prover - a mathematical proof system using Chinese command names",
+  "type": "module",
+  "main": "mcp_server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node mcp_server.js",
+    "dev": "tsx mcp_server.ts"
+  },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
     "mathjs": "^14.6.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.9.2"
   },
-  "type": "module"
+  "keywords": [
+    "mcp",
+    "theorem-prover",
+    "mathematics",
+    "proof-assistant",
+    "chinese"
+  ],
+  "author": "",
+  "license": "MIT"
 }
