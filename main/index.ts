@@ -736,69 +736,95 @@ export class ProofSession {
   }
 
   // Serialize the entire session as a self-contained proof script with strict insertion order
+  // Updated serializeAll() — incomplete `有` blocks are totally commented out.
   serializeAll(): string {
     const hist = this.commandHistory;
     const { earliestProveIndex, referencedFacts } = this.analyzeHistoryForSeeding();
 
-    // We'll determine which referenced facts must be emitted at top as seeds: those that are never proved before their first use.
-    const seedToEmit: Record<string, Fact> = {};
-    // compute firstUseIndex for each referenced fact
+    // compute which frames were finalized
+    const finalizedFrameIds = new Set<string>();
+    for (const rec of hist) {
+      if (rec.kind === 'finalize_frame' && rec.frameId) finalizedFrameIds.add(rec.frameId);
+    }
+
+    // compute firstUseIndex for referenced facts (same logic as before)
     const firstUseIndex: Record<string, number> = {};
     for (let i = 0; i < hist.length; i++) {
       const rec = hist[i];
       if (rec.kind === 'cmd' && rec.resolved) {
-        for (const key of ['hypothesisName', 'hypName', 'equalityName', 'oldName']) {
-          const n = rec.resolved[key]; if (!n) continue; const name = n as string;
+        for (const key of ['hypothesisName', 'hypName', 'equalityName', 'oldName'] as const) {
+          const n = (rec.resolved as any)[key];
+          if (!n) continue;
+          const name = n as string;
           if (firstUseIndex[name] === undefined) firstUseIndex[name] = i;
         }
-        if (rec.resolved.denomProofs) for (const d of rec.resolved.denomProofs) { if (d && d.name) { const name = d.name as string; if (firstUseIndex[name] === undefined) firstUseIndex[name] = i; } }
+        if (rec.resolved.denomProofs && Array.isArray(rec.resolved.denomProofs)) {
+          for (const d of rec.resolved.denomProofs) {
+            if (d && d.name) {
+              const name = d.name as string;
+              if (firstUseIndex[name] === undefined) firstUseIndex[name] = i;
+            }
+          }
+        }
       }
     }
+
+    // decide which referenced facts must be emitted as seeds
+    const seedToEmit: Record<string, Fact> = {};
     for (const [name, fact] of Object.entries(referencedFacts)) {
       const firstUse = firstUseIndex[name];
       const provedIdx = earliestProveIndex[name];
       if (firstUse !== undefined && (provedIdx === undefined || provedIdx > firstUse)) seedToEmit[name] = deepClone(fact);
-      // also include any globalContext seeds even if they are proved later to be explicit
       if (this.globalContext.has(name)) seedToEmit[name] = deepClone(this.globalContext.getFact(name)!);
     }
 
-    // Build textual output by streaming history, opening/closing frames according to start/finalize records.
+    // determine which frames were started but never finalized -> incomplete
+    const startedFrames = new Set<string>();
+    for (const rec of hist) if (rec.kind === 'start_frame' && rec.frameId) startedFrames.add(rec.frameId);
+    const incompleteFrames = new Set<string>();
+    for (const id of startedFrames) if (!finalizedFrameIds.has(id)) incompleteFrames.add(id);
+
+    // Begin building output
     const lines: string[] = [];
-    // emit seeds first
+
+    // emit seeds first (uncommented)
     for (const name of Object.keys(seedToEmit)) {
       const f = seedToEmit[name];
       lines.push(`有 ${name} : ${this.factToOriginalString(f)} 是 // seeded`);
     }
 
     const indentUnit = '  ';
-    const stack: string[] = []; // stack of frameIds currently open
+    // stack holds frameId and whether that frame (or an ancestor) forces commenting
+    const stack: Array<{ frameId: string; commented: boolean }> = [];
+
     for (let i = 0; i < hist.length; i++) {
       const rec = hist[i];
+
       if (rec.kind === 'start_frame') {
-        // start a new block in-place
         const header = `有 ${rec.frameName} : ${this.factToOriginalString(rec.goal!)} 是`;
+        // indentation based on current stack depth (before pushing this frame)
         const indent = indentUnit.repeat(stack.length);
-        lines.push(indent + header);
-        stack.push(rec.frameId);
+        const isThisFrameIncomplete = incompleteFrames.has(rec.frameId);
+        const parentCommented = stack.length > 0 && stack[stack.length - 1].commented;
+        // if parent is commented, child should also be commented to keep the block consistent
+        const commented = isThisFrameIncomplete || parentCommented;
+        stack.push({ frameId: rec.frameId, commented });
+        lines.push((commented ? '// ' : '') + indent + header);
       } else if (rec.kind === 'cmd') {
-        // command inside the current top frame
+        // render command in-place under current open frames
         const indent = indentUnit.repeat(stack.length);
         const rendered = this.renderCommandRecord(rec);
-        lines.push(indent + rendered);
+        const currentCommented = stack.length > 0 && stack[stack.length - 1].commented;
+        lines.push((currentCommented ? '// ' : '') + indent + rendered);
       } else if (rec.kind === 'finalize_frame') {
-        // close the current frame (we assume finalize corresponds to top-of-stack frame)
-        if (stack.length && stack[stack.length - 1] === rec.frameId) {
-          stack.pop();
-        } else {
-          // finalize of a non-top frame — find and remove it to keep structure consistent
-          const idx = stack.lastIndexOf(rec.frameId);
-          if (idx >= 0) stack.splice(idx, 1);
-        }
+        // finalize — remove frame from stack wherever it sits
+        const idx = stack.findIndex(s => s.frameId === rec.frameId);
+        if (idx >= 0) stack.splice(idx, 1);
+        // no explicit line emitted for finalize (preserve original behavior)
       }
     }
-    // close any remaining open frames (unfinalized) — we simply pop them
-    while (stack.length) stack.pop();
 
+    // Any frames still on stack at the end were incomplete and already emitted as commented blocks.
     return lines.join('\n');
   }
 }
