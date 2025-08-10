@@ -97,6 +97,49 @@ export function setAtPathInFact(f: Fact, path: Path, replacement: Expr): void {
 }
 
 ////////////////////////
+// Helper function for 不利 command
+////////////////////////
+function canProveNonZero(expr: Expr, component: Expr): boolean {
+  // Check if component appears in expr in a way that it must be non-zero
+  // given that expr ≠ 0
+  
+  if (exprEquals(expr, component)) {
+    // The entire expression equals the component, so yes
+    return true;
+  }
+  
+  if (expr.type === 'op') {
+    if (expr.op === 'mul') {
+      // If product ≠ 0, all factors must be ≠ 0
+      for (const arg of expr.args) {
+        if (canProveNonZero(arg, component)) return true;
+      }
+    } else if (expr.op === 'div') {
+      // If quotient ≠ 0, both numerator and denominator must be ≠ 0
+      if (canProveNonZero(expr.args[0], component)) return true;
+      if (canProveNonZero(expr.args[1], component)) return true;
+    } else if (expr.op === 'neg') {
+      // If -x ≠ 0, then x ≠ 0
+      return canProveNonZero(expr.args[0], component);
+    } else if (expr.op === 'pow') {
+      // If x^n ≠ 0, then x ≠ 0 (assuming n is not 0)
+      // For simplicity, we'll check the base
+      return canProveNonZero(expr.args[0], component);
+    }
+    // For add/sub, we can't deduce individual terms are non-zero
+  } else if (expr.type === 'func') {
+    // For certain functions, we might be able to deduce non-zero
+    // For now, we'll be conservative
+    if (expr.name === 'sqnorm') {
+      // If sqnorm(x) ≠ 0, then x ≠ 0
+      return canProveNonZero(expr.args[0], component);
+    }
+  }
+  
+  return false;
+}
+
+////////////////////////
 // Expr factory
 ////////////////////////
 export const Expr = {
@@ -348,9 +391,27 @@ export class Prover {
     const hyp = state.context.getFact(cmd.hypothesis);
     if (!hyp) { this.logger(`hypothesis not found: ${cmd.hypothesis}`); return false; }
     if (hyp.kind !== 'neq') { this.logger('不利 expects hypothesis of kind neq'); return false; }
-    const occ = findOccurrencesInExpr(hyp.lhs, cmd.component);
-    if (occ.length === 0) { this.logger('component not found inside hypothesis.lhs'); return false; }
-    const newFact: Fact = { kind: 'neq', lhs: deepClone(cmd.component), rhs: deepClone(hyp.rhs) };
+    
+    // Check if hypothesis is of form expr ≠ 0
+    const isZero = hyp.rhs.type === 'const' && (hyp.rhs.value === 0 || hyp.rhs.value === '0');
+    if (!isZero) {
+      // Fall back to original behavior for non-zero RHS
+      const occ = findOccurrencesInExpr(hyp.lhs, cmd.component);
+      if (occ.length === 0) { this.logger('component not found inside hypothesis.lhs'); return false; }
+      const newFact: Fact = { kind: 'neq', lhs: deepClone(cmd.component), rhs: deepClone(hyp.rhs) };
+      state.context.addFact(cmd.newName, newFact);
+      this.logger(`Added non-equal fact '${cmd.newName}': ${factToReadable(newFact)}`);
+      return true;
+    }
+    
+    // New behavior: if hypothesis is expr ≠ 0, check if component must be non-zero
+    if (!canProveNonZero(hyp.lhs, cmd.component)) {
+      this.logger(`不利: cannot prove ${exprToReadableString(cmd.component)} ≠ 0 from ${exprToReadableString(hyp.lhs)} ≠ 0`);
+      return false;
+    }
+    
+    // Create the fact: component ≠ 0
+    const newFact: Fact = { kind: 'neq', lhs: deepClone(cmd.component), rhs: Expr.const(0) };
     state.context.addFact(cmd.newName, newFact);
     this.logger(`Added non-equal fact '${cmd.newName}': ${factToReadable(newFact)}`);
     return true;
@@ -670,8 +731,17 @@ export class ProofSession {
       }
       case '不利': {
         const c = cmd as CmdBuli;
-        const rhsStr = r.hypothesisFact ? this.exprToOriginalString(r.hypothesisFact.rhs) : '???';
-        return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ ${rhsStr} 是 不利 ${c.hypothesis}`;
+        // Check if the hypothesis fact is of form expr ≠ 0
+        const hypFact = r.hypothesisFact;
+        if (hypFact && hypFact.kind === 'neq' && hypFact.rhs.type === 'const' && 
+            (hypFact.rhs.value === 0 || hypFact.rhs.value === '0')) {
+          // New format for proving component ≠ 0 from multiplicative expression
+          return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ 0 是 不利 ${c.hypothesis}`;
+        } else {
+          // Original format for other cases
+          const rhsStr = r.hypothesisFact ? this.exprToOriginalString(r.hypothesisFact.rhs) : '???';
+          return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ ${rhsStr} 是 不利 ${c.hypothesis}`;
+        }
       }
       case '反证': return `反证 ${(cmd as CmdFanzheng).hypName}`;
       case '再写': {
