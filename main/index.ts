@@ -1,13 +1,3 @@
-// chinese_theorem_prover.ts
-// TypeScript implementation of the Chinese Theorem Prover (no parser).
-// Ultrathink update: Historical command recording + strict insertion-order serialization.
-// - ProofSession maintains a chronological commandHistory capturing every startHave, command execution,
-//   and finalize event. Each record stores resolved snapshots of any referenced facts/expressions
-//   at execution time, so serialization is historically accurate and self-contained.
-// - Serialization places nested `有` at the exact insertion point where they were started.
-// - Serialization collects any referenced-but-unproven facts and emits them as seeded facts at the top,
-//   ensuring the exported proof can be replayed in isolation.
-
 import * as math from 'mathjs';
 
 ////////////////////////
@@ -325,56 +315,21 @@ export interface CommandRecord {
   ts: number;
 }
 
+type State = { goal: Fact; context: Context, explicitCompletion: boolean };
+
 ////////////////////////
 // Prover (core command implementations)
 ////////////////////////
 export class Prover {
-  private explicitCompletion: boolean = false;
-  context: Context;
   logger: (s: string) => void = () => {};
   rewriteRules: Record<string, { lhs: Expr; rhs: Expr }>;
-  constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
-    this.context = new Context(); for (const f of initialFacts) this.context.addFact(f.name, f.fact); this.rewriteRules = rules;
+  constructor(rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
+    this.rewriteRules = rules;
   }
   setLogger(fn: (s: string) => void) { this.logger = fn; }
 
-  seedContext(initialFacts: Array<{ name: string; fact: Fact }>, overwrite = false): { ok: boolean; message?: string } {
-    for (const f of initialFacts) {
-      if (!overwrite && this.context.has(f.name)) return { ok: false, message: `name collision: ${f.name}` };
-      if (overwrite) this.context.setFact(f.name, f.fact); else this.context.addFact(f.name, f.fact);
-      this.logger(`seeded fact '${f.name}' into prover context`);
-    }
-    return { ok: true };
-  }
-
-  have(name: string, fact: Fact, commands?: Command[]): boolean {
-    if (this.explicitCompletion) { this.logger("proof complete for frame, no more steps accepted"); return false; }
-    const sub = new Prover(); sub.context = this.context.clone(); sub.setLogger((s) => this.logger(`[${name}] ${s}`)); sub.rewriteRules = this.rewriteRules;
-    const ok = sub._runProofGoal(deepClone(fact), commands || []);
-    if (!ok) throw new Error(`Proof failed for ${name}`);
-    this.context.addFact(name, deepClone(fact)); this.logger(`Added fact '${name}' to context`); return true;
-  }
-
-  public runSingleCommandOnState(state: { goal: Fact; context: Context }, cmd: Command): boolean {
-    (this as any).rewriteRules = this.rewriteRules;
-    return this._runCommand(state, cmd);
-  }
-
-  private _runProofGoal(goal: Fact, commands: Command[]): boolean {
-    const state = { goal: deepClone(goal) as Fact, context: this.context };
-    this.logger(`Start goal: ${factToReadable(state.goal)}`);
-    for (const cmd of commands) {
-      this.logger(`Run cmd: ${JSON.stringify(cmd)}`);
-      const ok = this._runCommand(state, cmd as any);
-      if (!ok) { this.logger(`Command failed: ${JSON.stringify(cmd)}`); return false; }
-    }
-    const finalOk = this._checkGoalProved(state.goal);
-    this.logger(`Final goal check: ${finalOk}`);
-    return finalOk;
-  }
-
-  private _runCommand(state: { goal: Fact; context: Context }, cmd: Command): boolean {
-    if (this.explicitCompletion) { this.logger("proof complete for frame, no more steps accepted"); return false; }
+  public runCommand(state: State, cmd: Command): boolean {
+    if (state.explicitCompletion) { this.logger("proof complete for frame, no more steps accepted"); return false; }
 
     switch (cmd.cmd) {
       case '不利': return this._cmd_buli(state, cmd as CmdBuli);
@@ -387,7 +342,7 @@ export class Prover {
     }
   }
 
-  private _cmd_buli(state: { goal: Fact; context: Context }, cmd: CmdBuli): boolean {
+  private _cmd_buli(state: State, cmd: CmdBuli): boolean {
     const hyp = state.context.getFact(cmd.hypothesis);
     if (!hyp) { this.logger(`hypothesis not found: ${cmd.hypothesis}`); return false; }
     if (hyp.kind !== 'neq') { this.logger('不利 expects hypothesis of kind neq'); return false; }
@@ -412,7 +367,7 @@ export class Prover {
     return true;
   }
 
-  private _cmd_duoneng(state: { goal: Fact; context: Context }, cmd: CmdDuoneng): boolean {
+  private _cmd_duoneng(state: State, cmd: CmdDuoneng): boolean {
     const goal = state.goal;
     if (goal.kind !== 'eq') { this.logger('多能 currently only supports equality goals'); return false; }
     const dens = collectDenominatorsInExpr(goal.lhs).concat(collectDenominatorsInExpr(goal.rhs));
@@ -434,10 +389,10 @@ export class Prover {
     }
     const diff = `(${exprToMathJSStringOpaque(goal.lhs)}) - (${exprToMathJSStringOpaque(goal.rhs)})`;
     try {
-      const s = math.simplify(diff as any);
+      const s = math.simplify(math.rationalize(math.simplify(diff as any)));
       const sStr = s.toString(); this.logger(`math.simplify -> ${sStr}`);
       if (sStr === '0' || sStr === '0.0') {
-        this.explicitCompletion = true;
+        state.explicitCompletion = true;
         this.logger("frame complete");
         return true;
       }
@@ -447,7 +402,7 @@ export class Prover {
     } catch (e) { this.logger('多能 simplify failed: ' + (e as Error).message); return false; }
   }
 
-  private _cmd_fanzheng(state: { goal: Fact; context: Context }, cmd: CmdFanzheng): boolean {
+  private _cmd_fanzheng(state: State, cmd: CmdFanzheng): boolean {
     const h = state.context.getFact(cmd.hypName);
     if (!h) { this.logger(`反证: fact not found ${cmd.hypName}`); return false; }
     if (h.kind !== 'neq') { this.logger('反证 expects a non-equality (neq) hypothesis'); return false; }
@@ -459,7 +414,7 @@ export class Prover {
     return true;
   }
 
-  private _cmd_rewrite(state: { goal: Fact; context: Context }, cmd: CmdRewrite): boolean {
+  private _cmd_rewrite(state: State, cmd: CmdRewrite): boolean {
     const ruleName = cmd.equalityName;
     const ruleFromContext = state.context.getFact(ruleName);
     const isContextEq = !!(ruleFromContext && ruleFromContext.kind === 'eq');
@@ -493,7 +448,7 @@ export class Prover {
     return true;
   }
 
-  private _cmd_reverse(state: { goal: Fact; context: Context }, cmd: CmdReverse): boolean {
+  private _cmd_reverse(state: State, cmd: CmdReverse): boolean {
     const f = state.context.getFact(cmd.oldName);
     if (!f) { this.logger(`重反: fact not found ${cmd.oldName}`); return false; }
     if (f.kind !== 'eq') { this.logger('重反 expects an equality fact'); return false; }
@@ -501,7 +456,7 @@ export class Prover {
     state.context.addFact(cmd.newName, newFact); this.logger(`重反: added ${cmd.newName} = ${factToReadable(newFact)}`); return true;
   }
 
-  private _cmd_certain(state: { goal: Fact; context: Context }, _cmd: CmdCertain): boolean {
+  private _cmd_certain(state: State, _cmd: CmdCertain): boolean {
     const goal = state.goal; if (goal.kind !== 'eq') { this.logger('确定 expects an equality goal'); return false; }
     if (!isConstantExpr(goal.lhs) || !isConstantExpr(goal.rhs)) { this.logger('确定: not both sides constant'); return false; }
     try {
@@ -510,390 +465,28 @@ export class Prover {
       const sStr = s.toString(); this.logger(`确定: simplify -> ${sStr}`);
       if (sStr === '0' || sStr === '0.0') {
         this.logger("frame complete");
-        this.explicitCompletion = true;
+        state.explicitCompletion = true;
         return true;
       }
       return false;
     } catch (e) { this.logger('确定 simplify failed: ' + (e as Error).message); return false; }
   }
 
-  private _checkGoalProved(goal: Fact): boolean {
-    if (this.explicitCompletion) return true;
-    if (goal.kind === 'eq') {
-      if (exprEquals(goal.lhs, goal.rhs)) return true;
-      for (const k of this.context.keys()) { const f = this.context.getFact(k)!; if (f.kind === 'eq' && exprEquals(f.lhs, goal.lhs) && exprEquals(f.rhs, goal.rhs)) return true; }
+  public checkGoalProved(state: State): boolean {
+    if (state.explicitCompletion) {
+      console.log("hooray! it's an explicit completion");
+      return true;
+    }
+    if (state.goal.kind === 'eq') {
+      if (exprEquals(state.goal.lhs, state.goal.rhs)) return true;
+      for (const k of state.context.keys()) { const f = state.context.getFact(k)!; if (f.kind === 'eq' && exprEquals(f.lhs, state.goal.lhs) && exprEquals(f.rhs, state.goal.rhs)) return true; }
       return false;
     }
-    if (goal.kind === 'neq') {
-      for (const k of this.context.keys()) { const f = this.context.getFact(k)!; if (f.kind === 'neq' && exprEquals(f.lhs, goal.lhs) && exprEquals(f.rhs, goal.rhs)) return true; }
+    if (state.goal.kind === 'neq') {
+      for (const k of state.context.keys()) { const f = state.context.getFact(k)!; if (f.kind === 'neq' && exprEquals(f.lhs, state.goal.lhs) && exprEquals(f.rhs, state.goal.rhs)) return true; }
       return false;
     }
     return false;
-  }
-}
-
-////////////////////////
-// ProofSession & Frames: Fluent Piecemeal RPC (with historical command recording)
-////////////////////////
-
-export interface FrameState { id: string; name: string; goal: Fact; context: Context; commands: Command[]; completed: boolean; parentFrameId?: string | null; }
-
-export class ProofSession {
-  private globalContext: Context = new Context();
-  private frames: Map<string, FrameState> = new Map();
-  private counter = 0;
-  logger: (s: string) => void = () => {};
-  rewriteRules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES;
-
-  // chronological command history
-  public commandHistory: CommandRecord[] = [];
-
-  constructor(initialFacts: Array<{ name: string; fact: Fact }> = [], rules: Record<string, { lhs: Expr; rhs: Expr }> = DEFAULT_REWRITE_RULES) {
-    for (const f of initialFacts) this.globalContext.addFact(f.name, f.fact);
-    this.rewriteRules = rules;
-  }
-  setLogger(fn: (s: string) => void) { this.logger = fn; }
-
-  addGlobalFact(name: string, fact: Fact, overwrite = false): { ok: boolean; message?: string } {
-    if (!overwrite && this.globalContext.has(name)) return { ok: false, message: `global fact already present: ${name}` };
-    if (overwrite) this.globalContext.setFact(name, fact); else this.globalContext.addFact(name, fact);
-    this.logger(`Added global fact '${name}'`);
-    return { ok: true };
-  }
-
-  seedGlobalContext(initialFacts: Array<{ name: string; fact: Fact }>, overwrite = false): { ok: boolean; message?: string } {
-    for (const f of initialFacts) {
-      const res = this.addGlobalFact(f.name, f.fact, overwrite);
-      if (!res.ok) return { ok: false, message: `seeding failed at ${f.name}: ${res.message}` };
-    }
-    return { ok: true };
-  }
-
-  // startHave now records a start_frame record in the global chronological history
-  startHave(name: string, goal: Fact, parentFrameId?: string): string {
-    const id = `frame_${++this.counter}`;
-    const parentCtx = parentFrameId ? (this.frames.get(parentFrameId)?.context ?? this.globalContext.clone()) : this.globalContext.clone();
-    const ctxClone = parentCtx.clone();
-    const frame: FrameState = { id, name, goal: deepClone(goal), context: ctxClone, commands: [], completed: false, parentFrameId: parentFrameId ?? null };
-    this.frames.set(id, frame);
-    this.logger(`Started frame ${id} ('${name}')`);
-    // record start_frame with snapshot of the goal
-    this.commandHistory.push({ kind: 'start_frame', frameId: id, frameName: name, parentFrameId: parentFrameId ?? null, goal: deepClone(goal), ts: Date.now() });
-    return id;
-  }
-
-  // addCommand records a cmd record with resolved snapshots taken BEFORE executing the command,
-  // then runs the command (mutating the frame state) and returns status.
-  addCommand(frameId: string, cmd: Command): { ok: boolean; message?: string } {
-    const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
-    if (frame.completed) return { ok: false, message: 'frame already completed' };
-
-    // prepare resolved snapshot depending on command kind
-    const resolved: Record<string, any> = {};
-    // snapshot current goal of the frame
-    resolved.preGoal = deepClone(frame.goal);
-
-    try {
-      if (cmd.cmd === '不利') {
-        const c = cmd as CmdBuli;
-        const hyp = frame.context.getFact(c.hypothesis);
-        if (!hyp) return { ok: false, message: `hypothesis not found: ${c.hypothesis}` };
-        resolved.newName = c.newName;
-        resolved.component = deepClone(c.component);
-        resolved.hypothesisName = c.hypothesis;
-        resolved.hypothesisFact = deepClone(hyp);
-      } else if (cmd.cmd === '反证') {
-        const c = cmd as CmdFanzheng;
-        const hyp = frame.context.getFact(c.hypName);
-        if (!hyp) return { ok: false, message: `hypothesis not found: ${c.hypName}` };
-        resolved.hypName = c.hypName;
-        resolved.hypFactBefore = deepClone(hyp);
-        resolved.goalBefore = deepClone(frame.goal);
-      } else if (cmd.cmd === '多能') {
-        const c = cmd as CmdDuoneng;
-        resolved.denomProofs = (c.denomProofs || []).map((n) => ({ name: n, fact: frame.context.getFact(n) ? deepClone(frame.context.getFact(n)) : null }));
-      } else if (cmd.cmd === '再写') {
-        const c = cmd as CmdRewrite;
-        resolved.equalityName = c.equalityName;
-        const f = frame.context.getFact(c.equalityName);
-        if (f && f.kind === 'eq') resolved.equalitySnapshot = deepClone(f);
-        else if (this.rewriteRules[c.equalityName]) resolved.rewriteRule = deepClone(this.rewriteRules[c.equalityName]);
-      } else if (cmd.cmd === '重反') {
-        const c = cmd as CmdReverse;
-        const f = frame.context.getFact(c.oldName);
-        if (!f) return { ok: false, message: `old equality not found: ${c.oldName}` };
-        resolved.oldName = c.oldName; resolved.oldFact = deepClone(f); resolved.newName = c.newName;
-      } else if (cmd.cmd === '确定') {
-        resolved.goalBefore = deepClone(frame.goal);
-      }
-    } catch (e) { return { ok: false, message: 'snapshot failed: ' + (e as Error).message }; }
-
-    // run the command via a Prover instance (which will mutate frame.context and frame.goal)
-    const runner = new Prover(); runner.setLogger((s) => this.logger(`[frame ${frameId}] ${s}`));
-    runner.rewriteRules = this.rewriteRules;
-    const state = { goal: frame.goal, context: frame.context };
-    const ok = runner.runSingleCommandOnState(state, cmd);
-    if (!ok) return { ok: false, message: 'command failed' };
-
-    // record the command with the resolved snapshot AFTER successful execution
-    this.commandHistory.push({ kind: 'cmd', frameId, cmd: deepClone(cmd), resolved, ts: Date.now() });
-    frame.commands.push(deepClone(cmd));
-    return { ok: true };
-  }
-
-  // finalize records a finalize_frame record and then propagates the proven fact into parent/global context
-  finalize(frameId: string): { ok: boolean; message?: string } {
-    const frame = this.frames.get(frameId); if (!frame) return { ok: false, message: 'frame not found' };
-    if (frame.completed) return { ok: false, message: 'frame already completed' };
-    const prover = new Prover(); prover.setLogger((s) => this.logger(`[finalize ${frameId}] ${s}`)); prover.rewriteRules = this.rewriteRules;
-    prover.context = frame.context;
-    const ok = (prover as any)['_checkGoalProved'] ? (prover as any)['_checkGoalProved'](frame.goal) : false;
-    if (!ok) return { ok: false, message: 'goal not yet proved' };
-    // record finalize with a snapshot of the goal
-    this.commandHistory.push({ kind: 'finalize_frame', frameId, frameName: frame.name, goal: deepClone(frame.goal), ts: Date.now() });
-
-    if (frame.parentFrameId) {
-      const parent = this.frames.get(frame.parentFrameId);
-      if (!parent) return { ok: false, message: 'parent frame not found' };
-      parent.context.addFact(frame.name, deepClone(frame.goal));
-      this.logger(`Finalized frame ${frameId}: added '${frame.name}' to parent frame '${parent.id}' context`);
-    } else {
-      this.globalContext.addFact(frame.name, deepClone(frame.goal));
-      this.logger(`Finalized frame ${frameId}: added '${frame.name}' to global context`);
-    }
-    frame.completed = true; return { ok: true };
-  }
-
-  getFrameState(frameId: string): FrameState | undefined { const f = this.frames.get(frameId); return f ? deepClone(f) : undefined; }
-  listFrames(): string[] { return Array.from(this.frames.keys()); }
-  getGlobalContextKeys(): string[] { return this.globalContext.keys(); }
-
-  ////////////////////////
-  // PROOF SERIALIZATION (strict insertion-order + historical snapshots)
-  ////////////////////////
-
-  private exprToOriginalString(e: Expr, parentPrec = 0): string {
-    const PREC: Record<string, number> = { add: 1, sub: 1, mul: 2, div: 2, pow: 3, neg: 3, func: 4, var: 4, const: 4 };
-    function wrap(s: string, childPrec: number) {
-      return childPrec < parentPrec ? `(${s})` : s;
-    }
-    if (e.type === 'var') return e.name;
-    if (e.type === 'const') return String(e.value);
-    if (e.type === 'func') {
-      const arg = e.args[0];
-      const argStr = this.exprToOriginalString(arg, PREC.func);
-      const needParens = arg.type === 'op';
-      return `${e.name} ${needParens ? '(' + argStr + ')' : argStr}`;
-    }
-    if (e.type === 'op') {
-      const p = PREC[e.op];
-      if (e.op === 'add' || e.op === 'mul') {
-        const joiner = e.op === 'add' ? ' + ' : ' * ';
-        const parts = e.args.map(a => this.exprToOriginalString(a, p));
-        return wrap(parts.join(joiner), p);
-      }
-      if (e.op === 'sub') {
-        const a0 = this.exprToOriginalString(e.args[0], p);
-        const a1 = this.exprToOriginalString(e.args[1], p + 1);
-        return wrap(`${a0} - ${a1}`, p);
-      }
-      if (e.op === 'div') {
-        const a0 = this.exprToOriginalString(e.args[0], p);
-        const a1 = this.exprToOriginalString(e.args[1], p + 1);
-        return wrap(`${a0} / ${a1}`, p);
-      }
-      if (e.op === 'neg') {
-        const a0 = this.exprToOriginalString(e.args[0], p);
-        return wrap(`-${a0}`, p);
-      }
-      if (e.op === 'pow') {
-        const a0 = this.exprToOriginalString(e.args[0], p);
-        const a1 = this.exprToOriginalString(e.args[1], p);
-        return wrap(`${a0} ^ ${a1}`, p);
-      }
-    }
-    return JSON.stringify(e);
-  }
-
-  private factToOriginalString(f: Fact): string { return f.kind === 'eq' ? `${this.exprToOriginalString(f.lhs)} = ${this.exprToOriginalString(f.rhs)}` : `${this.exprToOriginalString(f.lhs)} ≠ ${this.exprToOriginalString(f.rhs)}`; }
-
-  // Render a command record using resolved snapshots so the output is historically accurate
-  private renderCommandRecord(rec: CommandRecord): string {
-    if (rec.kind !== 'cmd' || !rec.cmd) return '';
-    const cmd = rec.cmd;
-    const r = rec.resolved || {};
-    switch (cmd.cmd) {
-      case '多能': {
-        const d = (cmd as CmdDuoneng).denomProofs || [];
-        return d.length ? `多能 [${d.join(', ')}]` : '多能';
-      }
-      case '不利': {
-        const c = cmd as CmdBuli;
-        // Check if the hypothesis fact is of form expr ≠ 0
-        const hypFact = r.hypothesisFact;
-        if (hypFact && hypFact.kind === 'neq' && hypFact.rhs.type === 'const' && 
-            (hypFact.rhs.value === 0 || hypFact.rhs.value === '0')) {
-          // New format for proving component ≠ 0 from multiplicative expression
-          return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ 0 是 不利 ${c.hypothesis}`;
-        } else {
-          // Original format for other cases
-          const rhsStr = r.hypothesisFact ? this.exprToOriginalString(r.hypothesisFact.rhs) : '???';
-          return `有 ${c.newName} : ${this.exprToOriginalString(r.component || c.component)} ≠ ${rhsStr} 是 不利 ${c.hypothesis}`;
-        }
-      }
-      case '反证': return `反证 ${(cmd as CmdFanzheng).hypName}`;
-      case '再写': {
-        const rcmd = cmd as CmdRewrite; const occ = rcmd.occurrence || 1; return `再写 在 ${occ} ${rcmd.equalityName}`;
-      }
-      case '重反': {
-        const rcmd = cmd as CmdReverse; return `重反 ${rcmd.oldName} 成 ${rcmd.newName}`;
-      }
-      case '确定': return '确定';
-      default: return `// unknown command: ${JSON.stringify(cmd)}`;
-    }
-  }
-
-  // Build earliest finalize index map and collect referenced facts that need seeding
-  private analyzeHistoryForSeeding(): { earliestProveIndex: Record<string, number>; referencedFacts: Record<string, Fact> } {
-    const earliestProveIndex: Record<string, number> = {};
-    for (let i = 0; i < this.commandHistory.length; i++) {
-      const rec = this.commandHistory[i];
-      if (rec.kind === 'finalize_frame' && rec.frameName) {
-        if (earliestProveIndex[rec.frameName] === undefined) earliestProveIndex[rec.frameName] = i;
-      }
-    }
-    const referencedFacts: Record<string, Fact> = {};
-    for (let i = 0; i < this.commandHistory.length; i++) {
-      const rec = this.commandHistory[i];
-      if (rec.kind === 'cmd' && rec.resolved) {
-        // check common places where hypothesis/fact names are referenced
-        if (rec.resolved.hypothesisName && rec.resolved.hypothesisFact) {
-          const n = rec.resolved.hypothesisName as string;
-          const proveIdx = earliestProveIndex[n];
-          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.hypothesisFact);
-        }
-        if (rec.resolved.hypName && rec.resolved.hypFactBefore) {
-          const n = rec.resolved.hypName as string;
-          const proveIdx = earliestProveIndex[n];
-          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.hypFactBefore);
-        }
-        if (rec.resolved.denomProofs && Array.isArray(rec.resolved.denomProofs)) {
-          for (const d of rec.resolved.denomProofs) {
-            if (d && d.name && d.fact) {
-              const n = d.name as string; const f = d.fact as Fact | null;
-              const proveIdx = earliestProveIndex[n];
-              if (f && (proveIdx === undefined || proveIdx > i)) referencedFacts[n] = deepClone(f);
-            }
-          }
-        }
-        if (rec.resolved.equalityName && rec.resolved.equalitySnapshot) {
-          const n = rec.resolved.equalityName as string;
-          const proveIdx = earliestProveIndex[n];
-          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(rec.resolved.equalitySnapshot);
-        }
-        if (rec.resolved.oldName && rec.resolved.oldFact) {
-          const n = rec.resolved.oldName as string; const f = rec.resolved.oldFact as Fact;
-          const proveIdx = earliestProveIndex[n];
-          if (proveIdx === undefined || proveIdx > i) referencedFacts[n] = deepClone(f);
-        }
-      }
-    }
-    // Also include originally seeded global facts (they stand as seeds)
-    for (const k of this.globalContext.keys()) referencedFacts[k] = deepClone(this.globalContext.getFact(k)!);
-    return { earliestProveIndex, referencedFacts };
-  }
-
-  // Serialize the entire session as a self-contained proof script with strict insertion order
-  // Updated serializeAll() — incomplete `有` blocks are totally commented out.
-  serializeAll(): string {
-    const hist = this.commandHistory;
-    const { earliestProveIndex, referencedFacts } = this.analyzeHistoryForSeeding();
-
-    // compute which frames were finalized
-    const finalizedFrameIds = new Set<string>();
-    for (const rec of hist) {
-      if (rec.kind === 'finalize_frame' && rec.frameId) finalizedFrameIds.add(rec.frameId);
-    }
-
-    // compute firstUseIndex for referenced facts (same logic as before)
-    const firstUseIndex: Record<string, number> = {};
-    for (let i = 0; i < hist.length; i++) {
-      const rec = hist[i];
-      if (rec.kind === 'cmd' && rec.resolved) {
-        for (const key of ['hypothesisName', 'hypName', 'equalityName', 'oldName'] as const) {
-          const n = (rec.resolved as any)[key];
-          if (!n) continue;
-          const name = n as string;
-          if (firstUseIndex[name] === undefined) firstUseIndex[name] = i;
-        }
-        if (rec.resolved.denomProofs && Array.isArray(rec.resolved.denomProofs)) {
-          for (const d of rec.resolved.denomProofs) {
-            if (d && d.name) {
-              const name = d.name as string;
-              if (firstUseIndex[name] === undefined) firstUseIndex[name] = i;
-            }
-          }
-        }
-      }
-    }
-
-    // decide which referenced facts must be emitted as seeds
-    const seedToEmit: Record<string, Fact> = {};
-    for (const [name, fact] of Object.entries(referencedFacts)) {
-      const firstUse = firstUseIndex[name];
-      const provedIdx = earliestProveIndex[name];
-      if (firstUse !== undefined && (provedIdx === undefined || provedIdx > firstUse)) seedToEmit[name] = deepClone(fact);
-      if (this.globalContext.has(name)) seedToEmit[name] = deepClone(this.globalContext.getFact(name)!);
-    }
-
-    // determine which frames were started but never finalized -> incomplete
-    const startedFrames = new Set<string>();
-    for (const rec of hist) if (rec.kind === 'start_frame' && rec.frameId) startedFrames.add(rec.frameId);
-    const incompleteFrames = new Set<string>();
-    for (const id of startedFrames) if (!finalizedFrameIds.has(id)) incompleteFrames.add(id);
-
-    // Begin building output
-    const lines: string[] = [];
-
-    // emit seeds first (uncommented)
-    for (const name of Object.keys(seedToEmit)) {
-      const f = seedToEmit[name];
-      lines.push(`有 ${name} : ${this.factToOriginalString(f)} 是 // seeded`);
-    }
-
-    const indentUnit = '  ';
-    // stack holds frameId and whether that frame (or an ancestor) forces commenting
-    const stack: Array<{ frameId: string; commented: boolean }> = [];
-
-    for (let i = 0; i < hist.length; i++) {
-      const rec = hist[i];
-
-      if (rec.kind === 'start_frame') {
-        const header = `有 ${rec.frameName} : ${this.factToOriginalString(rec.goal!)} 是`;
-        // indentation based on current stack depth (before pushing this frame)
-        const indent = indentUnit.repeat(stack.length);
-        const isThisFrameIncomplete = incompleteFrames.has(rec.frameId);
-        const parentCommented = stack.length > 0 && stack[stack.length - 1].commented;
-        // if parent is commented, child should also be commented to keep the block consistent
-        const commented = isThisFrameIncomplete || parentCommented;
-        stack.push({ frameId: rec.frameId, commented });
-        lines.push((commented ? '// ' : '') + indent + header);
-      } else if (rec.kind === 'cmd') {
-        // render command in-place under current open frames
-        const indent = indentUnit.repeat(stack.length);
-        const rendered = this.renderCommandRecord(rec);
-        const currentCommented = stack.length > 0 && stack[stack.length - 1].commented;
-        lines.push((currentCommented ? '// ' : '') + indent + rendered);
-      } else if (rec.kind === 'finalize_frame') {
-        // finalize — remove frame from stack wherever it sits
-        const idx = stack.findIndex(s => s.frameId === rec.frameId);
-        if (idx >= 0) stack.splice(idx, 1);
-        // no explicit line emitted for finalize (preserve original behavior)
-      }
-    }
-
-    // Any frames still on stack at the end were incomplete and already emitted as commented blocks.
-    return lines.join('\n');
   }
 }
 
@@ -917,28 +510,6 @@ export function exprToReadableString(e: Expr): string {
 export function collectVarNames(f: Fact): string[] { const s = new Set<string>(); function rec(n: Expr) { if (n.type === 'var') s.add(n.name); else if (n.type === 'op' || n.type === 'func') n.args.forEach(rec); } rec(f.lhs); rec(f.rhs); return [...s]; }
 
 ////////////////////////
-// Usage Example (runnable with ts-node)
-////////////////////////
-/*
-  Example: seed global context and run 反证 then serialize (insertion-order + history)
-
-  import { Expr, ProofSession } from './chinese_theorem_prover';
-  const sess = new ProofSession([
-    { name: 'g', fact: Expr.neq(Expr.var('a'), Expr.const(5)) }
-  ]);
-  sess.setLogger(console.log);
-  const frameId = sess.startHave('main_goal', Expr.neq(Expr.add(Expr.var('a'), Expr.const(1)), Expr.const(6)));
-  sess.addCommand(frameId, { cmd: '反证', hypName: 'g' });
-  // start subframe in-place
-  const childId = sess.startHave('subgoal', Expr.eq(Expr.var('a'), Expr.const(5)), frameId);
-  sess.addCommand(childId, { cmd: '确定' });
-  sess.finalize(childId);
-  sess.finalize(frameId);
-
-  console.log('Serialized proof:\n' + sess.serializeAll());
-*/
-
-////////////////////////
 // Exports
 ////////////////////////
-export default { Expr, Prover, Context, ProofSession, DEFAULT_REWRITE_RULES };
+export default { Expr, Prover, Context, DEFAULT_REWRITE_RULES };
