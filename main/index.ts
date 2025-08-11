@@ -329,6 +329,7 @@ export interface CommandRecord {
 // Prover (core command implementations)
 ////////////////////////
 export class Prover {
+  private explicitCompletion: boolean = false;
   context: Context;
   logger: (s: string) => void = () => {};
   rewriteRules: Record<string, { lhs: Expr; rhs: Expr }>;
@@ -347,6 +348,7 @@ export class Prover {
   }
 
   have(name: string, fact: Fact, commands?: Command[]): boolean {
+    if (this.explicitCompletion) { this.logger("proof complete for frame, no more steps accepted"); return false; }
     const sub = new Prover(); sub.context = this.context.clone(); sub.setLogger((s) => this.logger(`[${name}] ${s}`)); sub.rewriteRules = this.rewriteRules;
     const ok = sub._runProofGoal(deepClone(fact), commands || []);
     if (!ok) throw new Error(`Proof failed for ${name}`);
@@ -372,6 +374,8 @@ export class Prover {
   }
 
   private _runCommand(state: { goal: Fact; context: Context }, cmd: Command): boolean {
+    if (this.explicitCompletion) { this.logger("proof complete for frame, no more steps accepted"); return false; }
+
     switch (cmd.cmd) {
       case '不利': return this._cmd_buli(state, cmd as CmdBuli);
       case '多能': return this._cmd_duoneng(state, cmd as CmdDuoneng);
@@ -391,13 +395,8 @@ export class Prover {
     // Check if hypothesis is of form expr ≠ 0
     const isZero = hyp.rhs.type === 'const' && (hyp.rhs.value === 0 || hyp.rhs.value === '0');
     if (!isZero) {
-      // Fall back to original behavior for non-zero RHS
-      const occ = findOccurrencesInExpr(hyp.lhs, cmd.component);
-      if (occ.length === 0) { this.logger('component not found inside hypothesis.lhs'); return false; }
-      const newFact: Fact = { kind: 'neq', lhs: deepClone(cmd.component), rhs: deepClone(hyp.rhs) };
-      state.context.addFact(cmd.newName, newFact);
-      this.logger(`Added non-equal fact '${cmd.newName}': ${factToReadable(newFact)}`);
-      return true;
+      this.logger(`不利: right hand side of ≠ is not 0`);
+      return false;
     }
     
     // New behavior: if hypothesis is expr ≠ 0, check if component must be non-zero
@@ -437,17 +436,14 @@ export class Prover {
     try {
       const s = math.simplify(diff as any);
       const sStr = s.toString(); this.logger(`math.simplify -> ${sStr}`);
-      if (sStr === '0' || sStr === '0.0') return true;
-      if (diff.includes('F_CONJ') || diff.includes('F_RE') || diff.includes('F_IM') || diff.includes('F_SQNORM')) { this.logger('多能: contains opaque functions; cannot numeric-test'); return false; }
-      const varNames = collectVarNames(goal);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const scope: Record<string, number> = {};
-        const val = 2 + attempt;
-        for (const v of varNames) scope[v] = val;
-        const ev = math.evaluate(diff, scope);
-        if (Math.abs(Number(ev)) > 1e-9) return false;
+      if (sStr === '0' || sStr === '0.0') {
+        this.explicitCompletion = true;
+        this.logger("frame complete");
+        return true;
       }
-      return true;
+      this.logger("多能 simplify failed, can't prove with field axioms");
+      console.log(s.toString());
+      return false;
     } catch (e) { this.logger('多能 simplify failed: ' + (e as Error).message); return false; }
   }
 
@@ -512,11 +508,17 @@ export class Prover {
       const diff = `(${exprToMathJSStringReal(goal.lhs)}) - (${exprToMathJSStringReal(goal.rhs)})`;
       const s = math.simplify(diff as any);
       const sStr = s.toString(); this.logger(`确定: simplify -> ${sStr}`);
-      return sStr === '0' || sStr === '0.0';
+      if (sStr === '0' || sStr === '0.0') {
+        this.logger("frame complete");
+        this.explicitCompletion = true;
+        return true;
+      }
+      return false;
     } catch (e) { this.logger('确定 simplify failed: ' + (e as Error).message); return false; }
   }
 
   private _checkGoalProved(goal: Fact): boolean {
+    if (this.explicitCompletion) return true;
     if (goal.kind === 'eq') {
       if (exprEquals(goal.lhs, goal.rhs)) return true;
       for (const k of this.context.keys()) { const f = this.context.getFact(k)!; if (f.kind === 'eq' && exprEquals(f.lhs, goal.lhs) && exprEquals(f.rhs, goal.rhs)) return true; }
