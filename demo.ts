@@ -62,6 +62,7 @@ function runDemo() {
     equalityName: 'sqnorm_def'
   });
   log(`Step 1b success: ${success2}`);
+  console.log(session.getSummary());
 
   log("\n--- Step 2: Work with the Re condition ---");
   
@@ -90,6 +91,7 @@ function runDemo() {
     newName: 'hp_rev'
   });
   log(`Re condition reverse success: ${reSuccess1}`);
+  console.log(session.getSummary());
 
   const reSuccess2 = reCondChild.runCommand({
     cmd: '再写',
