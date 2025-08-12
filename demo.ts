@@ -1,5 +1,5 @@
-import ProofSession from './proof-session';
-import { Expr } from './prover-core';
+import ProofSession from './proof-session.js';
+import { Expr } from './prover-core.js';
 
 // Set up logging
 const log = (message: string) => {
@@ -168,7 +168,7 @@ function runDemo() {
   log("\nFinal session state:");
   log(session.getSummary());
   
-  log("\nIs proof complete?", session.isComplete());
+  log("\nIs proof complete? " + session.isComplete());
   
   log("\nSerialization summary:");
   log(session.getSerializationSummary());

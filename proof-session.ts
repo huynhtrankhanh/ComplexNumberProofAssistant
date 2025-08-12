@@ -1,4 +1,5 @@
-import { Prover, Context, Fact, Command, Expr, DEFAULT_REWRITE_RULES, factToReadable, exprToReadableString } from './prover-core.js';
+import { Prover, Context, Expr, DEFAULT_REWRITE_RULES, factToReadable, exprToReadableString } from './prover-core.js';
+import type { Fact, Command } from "./prover-core.js";
 
 type State = { goal: Fact; context: Context; explicitCompletion: boolean };
 
