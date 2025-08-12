@@ -698,7 +698,7 @@ Re((O-M)/(A-B)): {"type":"func","name":"Re","args":[{"type":"op","op":"div","arg
     };
   }
 
-  private convertToExpr(exprData: Expression): any {
+  private convertToExpr(exprData: Expression): Expr {
     const validated = ExpressionSchema.parse(exprData);
     
     switch (validated.type) {
