@@ -6,9 +6,109 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import ProofSession from './proof-session.js';
 import { Expr } from './prover-core.js';
 import type { Fact, Command } from './prover-core.js';
+
+// Zod schemas for expression validation
+const ExpressionSchema: z.ZodSchema<any> = z.lazy(() => z.union([
+  z.object({
+    type: z.literal('var'),
+    name: z.string().min(1, 'Variable name cannot be empty')
+  }),
+  z.object({
+    type: z.literal('const'),
+    value: z.union([z.string(), z.number()])
+  }),
+  z.object({
+    type: z.literal('op'),
+    op: z.enum(['add', 'sub', 'mul', 'div', 'neg', 'pow']),
+    args: z.array(ExpressionSchema).min(1, 'Operation must have at least one argument')
+  }),
+  z.object({
+    type: z.literal('func'),
+    name: z.enum(['conj', 'Re', 'Im', 'sqnorm']),
+    args: z.array(ExpressionSchema).length(1, 'Functions must have exactly one argument')
+  })
+]));
+
+const FactSchema = z.object({
+  kind: z.enum(['eq', 'neq']),
+  lhs: ExpressionSchema,
+  rhs: ExpressionSchema
+});
+
+const CommandSchema = z.union([
+  z.object({
+    cmd: z.literal('多能'),
+    denomProofs: z.array(z.string()).optional()
+  }),
+  z.object({
+    cmd: z.literal('不利'),
+    newName: z.string().min(1),
+    component: ExpressionSchema,
+    hypothesis: z.string().min(1)
+  }),
+  z.object({
+    cmd: z.literal('反证'),
+    hypName: z.string().min(1)
+  }),
+  z.object({
+    cmd: z.literal('再写'),
+    occurrence: z.number().int().min(1).optional(),
+    equalityName: z.string().min(1)
+  }),
+  z.object({
+    cmd: z.literal('重反'),
+    oldName: z.string().min(1),
+    newName: z.string().min(1)
+  }),
+  z.object({
+    cmd: z.literal('确定')
+  })
+]);
+
+const CreateSessionSchema = z.object({
+  goal: FactSchema,
+  hypotheses: z.record(z.string(), FactSchema).optional(),
+  sessionName: z.string().optional()
+});
+
+const RunCommandSchema = z.object({
+  command: CommandSchema,
+  sessionId: z.string().optional()
+});
+
+const StartNestedProofSchema = z.object({
+  goal: FactSchema,
+  parentSessionId: z.string().optional()
+});
+
+const FinalizeNestedProofSchema = z.object({
+  childSessionId: z.string(),
+  factName: z.string().min(1),
+  parentSessionId: z.string().optional()
+});
+
+const GetProofStateSchema = z.object({
+  sessionId: z.string().optional()
+});
+
+const SwitchSessionSchema = z.object({
+  sessionId: z.string()
+});
+
+// TypeScript types derived from Zod schemas
+type Expression = z.infer<typeof ExpressionSchema>;
+type FactType = z.infer<typeof FactSchema>;
+type CommandType = z.infer<typeof CommandSchema>;
+type CreateSessionArgs = z.infer<typeof CreateSessionSchema>;
+type RunCommandArgs = z.infer<typeof RunCommandSchema>;
+type StartNestedProofArgs = z.infer<typeof StartNestedProofSchema>;
+type FinalizeNestedProofArgs = z.infer<typeof FinalizeNestedProofSchema>;
+type GetProofStateArgs = z.infer<typeof GetProofStateSchema>;
+type SwitchSessionArgs = z.infer<typeof SwitchSessionSchema>;
 
 interface ProofState {
   sessionId: string;
@@ -49,123 +149,6 @@ class ProofSessionServer {
   private setupToolHandlers() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
-        definitions: {
-          expression: {
-            type: 'object',
-            description: 'Mathematical expression in the Chinese theorem prover',
-            oneOf: [
-              {
-                description: 'Variable expression',
-                type: 'object',
-                properties: {
-                  type: { const: 'var' },
-                  name: { type: 'string', description: 'Variable name (e.g., "x", "A", "O", "M", "i")' }
-                },
-                required: ['type', 'name'],
-                additionalProperties: false
-              },
-              {
-                description: 'Constant expression',
-                type: 'object',
-                properties: {
-                  type: { const: 'const' },
-                  value: { 
-                    oneOf: [{ type: 'string' }, { type: 'number' }],
-                    description: 'Constant value (e.g., 0, 1, 2, -1, "i")' 
-                  }
-                },
-                required: ['type', 'value'],
-                additionalProperties: false
-              },
-              {
-                description: 'Operation expression',
-                type: 'object',
-                properties: {
-                  type: { const: 'op' },
-                  op: { 
-                    type: 'string',
-                    enum: ['add', 'sub', 'mul', 'div', 'neg', 'pow'],
-                    description: 'add: a+b+c (multiple args), sub: a-b (2 args), mul: a*b*c (multiple args), div: a/b (2 args), neg: -a (1 arg), pow: a^b (2 args)'
-                  },
-                  args: {
-                    type: 'array',
-                    description: 'Arguments to the operation',
-                    items: { $ref: '#/definitions/expression' },
-                    minItems: 1
-                  }
-                },
-                required: ['type', 'op', 'args'],
-                additionalProperties: false
-              },
-              {
-                description: 'Function call expression',
-                type: 'object',
-                properties: {
-                  type: { const: 'func' },
-                  name: { 
-                    type: 'string',
-                    enum: ['conj', 'Re', 'Im', 'sqnorm'],
-                    description: 'conj: complex conjugate, Re: real part, Im: imaginary part, sqnorm: squared norm |z|²'
-                  },
-                  args: {
-                    type: 'array',
-                    description: 'Arguments to the function (exactly 1 argument for all functions)',
-                    items: { $ref: '#/definitions/expression' },
-                    minItems: 1,
-                    maxItems: 1
-                  }
-                },
-                required: ['type', 'name', 'args'],
-                additionalProperties: false
-              }
-            ],
-            examples: [
-              { type: 'var', name: 'x' },
-              { type: 'var', name: 'A' },
-              { type: 'var', name: 'O' },
-              { type: 'var', name: 'i' },
-              { type: 'const', value: 0 },
-              { type: 'const', value: 2 },
-              { type: 'const', value: -1 },
-              { type: 'op', op: 'add', args: [{ type: 'var', name: 'a' }, { type: 'var', name: 'b' }] },
-              { type: 'op', op: 'sub', args: [{ type: 'var', name: 'O' }, { type: 'var', name: 'A' }] },
-              { type: 'op', op: 'mul', args: [{ type: 'var', name: 'x' }, { type: 'var', name: 'y' }] },
-              { type: 'op', op: 'div', args: [{ type: 'op', op: 'add', args: [{ type: 'var', name: 'A' }, { type: 'var', name: 'B' }] }, { type: 'const', value: 2 }] },
-              { type: 'op', op: 'neg', args: [{ type: 'var', name: 'x' }] },
-              { type: 'op', op: 'pow', args: [{ type: 'var', name: 'i' }, { type: 'const', value: 2 }] },
-              { type: 'func', name: 'conj', args: [{ type: 'var', name: 'z' }] },
-              { type: 'func', name: 'Re', args: [{ type: 'op', op: 'div', args: [{ type: 'op', op: 'sub', args: [{ type: 'var', name: 'O' }, { type: 'var', name: 'M' }] }, { type: 'op', op: 'sub', args: [{ type: 'var', name: 'A' }, { type: 'var', name: 'B' }] }] }] },
-              { type: 'func', name: 'sqnorm', args: [{ type: 'op', op: 'sub', args: [{ type: 'var', name: 'O' }, { type: 'var', name: 'A' }] }] }
-            ]
-          },
-          fact: {
-            type: 'object',
-            description: 'Mathematical fact (equality or inequality)',
-            properties: {
-              kind: {
-                type: 'string',
-                enum: ['eq', 'neq'],
-                description: 'eq: equality (=), neq: inequality (≠)'
-              },
-              lhs: {
-                description: 'Left hand side expression',
-                $ref: '#/definitions/expression'
-              },
-              rhs: {
-                description: 'Right hand side expression', 
-                $ref: '#/definitions/expression'
-              }
-            },
-            required: ['kind', 'lhs', 'rhs'],
-            additionalProperties: false,
-            examples: [
-              { kind: 'eq', lhs: { type: 'var', name: 'x' }, rhs: { type: 'const', value: 0 } },
-              { kind: 'neq', lhs: { type: 'var', name: 'A' }, rhs: { type: 'var', name: 'B' } },
-              { kind: 'eq', lhs: { type: 'var', name: 'M' }, rhs: { type: 'op', op: 'div', args: [{ type: 'op', op: 'add', args: [{ type: 'var', name: 'A' }, { type: 'var', name: 'B' }] }, { type: 'const', value: 2 }] } },
-              { kind: 'eq', lhs: { type: 'func', name: 'sqnorm', args: [{ type: 'op', op: 'sub', args: [{ type: 'var', name: 'O' }, { type: 'var', name: 'A' }] }] }, rhs: { type: 'func', name: 'sqnorm', args: [{ type: 'op', op: 'sub', args: [{ type: 'var', name: 'O' }, { type: 'var', name: 'B' }] }] } }
-            ]
-          }
-        },
         tools: [
           {
             name: 'create_proof_session',
@@ -197,20 +180,53 @@ PROOF STRATEGIES:
 - Inequality A≠B: (1) 反证 hypothesis or (2) 不利 from larger expression  
 - General equality: (1) try 多能 first (2) 再写 definitions (3) apply rules (4) 多能 finish
 
-NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to add result as fact to parent.`,
+NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to add result as fact to parent.
+
+EXPRESSION SYNTAX:
+Variable: {"type":"var","name":"x"}
+Constant: {"type":"const","value":0} or {"type":"const","value":"i"}
+Add: {"type":"op","op":"add","args":[expr1,expr2,...]}
+Subtract: {"type":"op","op":"sub","args":[expr1,expr2]}
+Multiply: {"type":"op","op":"mul","args":[expr1,expr2,...]}
+Divide: {"type":"op","op":"div","args":[numerator,denominator]}
+Negate: {"type":"op","op":"neg","args":[expr]}
+Power: {"type":"op","op":"pow","args":[base,exponent]}
+Conjugate: {"type":"func","name":"conj","args":[expr]}
+Real: {"type":"func","name":"Re","args":[expr]}
+Imaginary: {"type":"func","name":"Im","args":[expr]}
+Norm: {"type":"func","name":"sqnorm","args":[expr]}
+
+EXAMPLES:
+x: {"type":"var","name":"x"}
+O-A: {"type":"op","op":"sub","args":[{"type":"var","name":"O"},{"type":"var","name":"A"}]}
+(A+B)/2: {"type":"op","op":"div","args":[{"type":"op","op":"add","args":[{"type":"var","name":"A"},{"type":"var","name":"B"}]},{"type":"const","value":2}]}
+sqnorm(O-A): {"type":"func","name":"sqnorm","args":[{"type":"op","op":"sub","args":[{"type":"var","name":"O"},{"type":"var","name":"A"}]}]}
+Re((O-M)/(A-B)): {"type":"func","name":"Re","args":[{"type":"op","op":"div","args":[{"type":"op","op":"sub","args":[{"type":"var","name":"O"},{"type":"var","name":"M"}]},{"type":"op","op":"sub","args":[{"type":"var","name":"A"},{"type":"var","name":"B"}]}]}]}`,
             inputSchema: {
               type: 'object',
               properties: {
-                goal: { $ref: '#/definitions/fact' },
+                goal: {
+                  type: 'object',
+                  properties: {
+                    kind: { type: 'string', enum: ['eq', 'neq'] },
+                    lhs: { type: 'object' },
+                    rhs: { type: 'object' }
+                  },
+                  required: ['kind', 'lhs', 'rhs']
+                },
                 hypotheses: {
                   type: 'object',
-                  description: 'Initial hypotheses as name->fact mappings',
-                  additionalProperties: { $ref: '#/definitions/fact' }
+                  additionalProperties: {
+                    type: 'object',
+                    properties: {
+                      kind: { type: 'string', enum: ['eq', 'neq'] },
+                      lhs: { type: 'object' },
+                      rhs: { type: 'object' }
+                    },
+                    required: ['kind', 'lhs', 'rhs']
+                  }
                 },
-                sessionName: {
-                  type: 'string',
-                  description: 'Optional name for the session'
-                }
+                sessionName: { type: 'string' }
               },
               required: ['goal']
             }
@@ -249,14 +265,12 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
               type: 'object',
               properties: {
                 command: {
-                  type: 'object',
-                  description: 'The command to execute',
                   oneOf: [
                     {
                       type: 'object',
                       properties: {
                         cmd: { const: '多能' },
-                        denomProofs: { type: 'array', items: { type: 'string' }, description: 'Fact names proving denominators≠0' }
+                        denomProofs: { type: 'array', items: { type: 'string' } }
                       },
                       required: ['cmd'],
                       additionalProperties: false
@@ -265,9 +279,9 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
                       type: 'object',
                       properties: {
                         cmd: { const: '不利' },
-                        newName: { type: 'string' },
-                        component: { $ref: '#/definitions/expression' },
-                        hypothesis: { type: 'string' }
+                        newName: { type: 'string', minLength: 1 },
+                        component: { type: 'object' },
+                        hypothesis: { type: 'string', minLength: 1 }
                       },
                       required: ['cmd', 'newName', 'component', 'hypothesis'],
                       additionalProperties: false
@@ -276,7 +290,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
                       type: 'object',
                       properties: {
                         cmd: { const: '反证' },
-                        hypName: { type: 'string' }
+                        hypName: { type: 'string', minLength: 1 }
                       },
                       required: ['cmd', 'hypName'],
                       additionalProperties: false
@@ -285,9 +299,10 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
                       type: 'object',
                       properties: {
                         cmd: { const: '再写' },
-                        occurrence: { type: 'number', minimum: 1 },
+                        occurrence: { type: 'integer', minimum: 1 },
                         equalityName: { 
                           type: 'string',
+                          minLength: 1,
                           description: 'Rule: conj_inv,conj_add,conj_mul,conj_sub,conj_div,conj_neg,sqnorm_def,re_def,im_def,i_square OR fact name from context'
                         }
                       },
@@ -298,8 +313,8 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
                       type: 'object',
                       properties: {
                         cmd: { const: '重反' },
-                        oldName: { type: 'string' },
-                        newName: { type: 'string' }
+                        oldName: { type: 'string', minLength: 1 },
+                        newName: { type: 'string', minLength: 1 }
                       },
                       required: ['cmd', 'oldName', 'newName'],
                       additionalProperties: false
@@ -314,7 +329,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
                     }
                   ]
                 },
-                sessionId: { type: 'string', description: 'Optional session ID' }
+                sessionId: { type: 'string' }
               },
               required: ['command']
             }
@@ -325,8 +340,16 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
             inputSchema: {
               type: 'object',
               properties: {
-                goal: { $ref: '#/definitions/fact' },
-                parentSessionId: { type: 'string', description: 'Optional parent session ID' }
+                goal: {
+                  type: 'object',
+                  properties: {
+                    kind: { type: 'string', enum: ['eq', 'neq'] },
+                    lhs: { type: 'object' },
+                    rhs: { type: 'object' }
+                  },
+                  required: ['kind', 'lhs', 'rhs']
+                },
+                parentSessionId: { type: 'string' }
               },
               required: ['goal']
             }
@@ -337,9 +360,9 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
             inputSchema: {
               type: 'object',
               properties: {
-                childSessionId: { type: 'string' },
-                factName: { type: 'string' },
-                parentSessionId: { type: 'string', description: 'Optional parent session ID' }
+                childSessionId: { type: 'string', minLength: 1 },
+                factName: { type: 'string', minLength: 1 },
+                parentSessionId: { type: 'string' }
               },
               required: ['childSessionId', 'factName']
             }
@@ -350,7 +373,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
             inputSchema: {
               type: 'object',
               properties: {
-                sessionId: { type: 'string', description: 'Optional session ID' }
+                sessionId: { type: 'string' }
               }
             }
           },
@@ -365,7 +388,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
             inputSchema: {
               type: 'object',
               properties: {
-                sessionId: { type: 'string' }
+                sessionId: { type: 'string', minLength: 1 }
               },
               required: ['sessionId']
             }
@@ -407,15 +430,15 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     });
   }
 
-  private async handleCreateSession(args: any) {
-    const { goal, hypotheses, sessionName } = args;
+  private async handleCreateSession(args: unknown) {
+    const parsed = CreateSessionSchema.parse(args);
     
-    const goalFact = this.objectToFact(goal);
+    const goalFact = this.convertToFact(parsed.goal);
     const hypothesesFacts: Record<string, Fact> = {};
     
-    if (hypotheses) {
-      for (const [name, fact] of Object.entries(hypotheses)) {
-        hypothesesFacts[name] = this.objectToFact(fact as any);
+    if (parsed.hypotheses) {
+      for (const [name, fact] of Object.entries(parsed.hypotheses)) {
+        hypothesesFacts[name] = this.convertToFact(fact);
       }
     }
     
@@ -445,9 +468,9 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleRunCommand(args: any) {
-    const { command, sessionId } = args;
-    const targetSessionId = sessionId || this.currentSessionId;
+  private async handleRunCommand(args: unknown) {
+    const parsed = RunCommandSchema.parse(args);
+    const targetSessionId = parsed.sessionId || this.currentSessionId;
     
     if (!targetSessionId) {
       throw new Error('No active session. Create a session first.');
@@ -458,7 +481,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
       throw new Error(`Session not found: ${targetSessionId}`);
     }
     
-    const cmd = this.objectToCommand(command);
+    const cmd = this.convertToCommand(parsed.command);
     const success = session.runCommand(cmd);
     const state = this.getSessionState(session);
     
@@ -469,7 +492,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
           text: JSON.stringify({
             success: success,
             message: success ? 'Command executed successfully' : 'Command failed',
-            command: command,
+            command: parsed.command,
             sessionId: targetSessionId,
             state: state
           }, null, 2)
@@ -478,9 +501,9 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleStartNestedProof(args: any) {
-    const { goal, parentSessionId } = args;
-    const targetSessionId = parentSessionId || this.currentSessionId;
+  private async handleStartNestedProof(args: unknown) {
+    const parsed = StartNestedProofSchema.parse(args);
+    const targetSessionId = parsed.parentSessionId || this.currentSessionId;
     
     if (!targetSessionId) {
       throw new Error('No active session. Create a session first.');
@@ -491,7 +514,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
       throw new Error(`Parent session not found: ${targetSessionId}`);
     }
     
-    const goalFact = this.objectToFact(goal);
+    const goalFact = this.convertToFact(parsed.goal);
     const childSession = parentSession.startNestedProof(goalFact);
     
     this.sessions.set(childSession.getSessionId(), childSession);
@@ -518,25 +541,25 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleFinalizeNestedProof(args: any) {
-    const { childSessionId, factName, parentSessionId } = args;
-    const targetParentId = parentSessionId || this.currentSessionId;
+  private async handleFinalizeNestedProof(args: unknown) {
+    const parsed = FinalizeNestedProofSchema.parse(args);
+    const targetParentId = parsed.parentSessionId || this.currentSessionId;
     
     if (!targetParentId) {
       throw new Error('No active parent session.');
     }
     
     const parentSession = this.sessions.get(targetParentId);
-    const childSession = this.sessions.get(childSessionId);
+    const childSession = this.sessions.get(parsed.childSessionId);
     
     if (!parentSession) {
       throw new Error(`Parent session not found: ${targetParentId}`);
     }
     if (!childSession) {
-      throw new Error(`Child session not found: ${childSessionId}`);
+      throw new Error(`Child session not found: ${parsed.childSessionId}`);
     }
     
-    const success = parentSession.finalizeNestedProof(childSession, factName);
+    const success = parentSession.finalizeNestedProof(childSession, parsed.factName);
     this.currentSessionId = targetParentId;
     
     const parentState = this.getSessionState(parentSession);
@@ -548,11 +571,11 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
           text: JSON.stringify({
             success: success,
             message: success ? 
-              `Finalized nested proof: ${factName}` : 
+              `Finalized nested proof: ${parsed.factName}` : 
               'Failed to finalize nested proof',
             parentSessionId: targetParentId,
-            childSessionId: childSessionId,
-            factName: factName,
+            childSessionId: parsed.childSessionId,
+            factName: parsed.factName,
             currentSession: this.currentSessionId,
             state: parentState
           }, null, 2)
@@ -561,9 +584,9 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleGetProofState(args: any) {
-    const { sessionId } = args;
-    const targetSessionId = sessionId || this.currentSessionId;
+  private async handleGetProofState(args: unknown) {
+    const parsed = GetProofStateSchema.parse(args);
+    const targetSessionId = parsed.sessionId || this.currentSessionId;
     
     if (!targetSessionId) {
       throw new Error('No active session.');
@@ -590,7 +613,8 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleListSessions(args: any) {
+  private async handleListSessions(args: unknown) {
+    // No validation needed for empty object
     const sessionsList = Array.from(this.sessions.entries()).map(([id, session]) => ({
       sessionId: id,
       goal: this.factToString(session.getGoal()),
@@ -614,17 +638,17 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private async handleSwitchSession(args: any) {
-    const { sessionId } = args;
+  private async handleSwitchSession(args: unknown) {
+    const parsed = SwitchSessionSchema.parse(args);
     
-    if (!this.sessions.has(sessionId)) {
-      throw new Error(`Session not found: ${sessionId}`);
+    if (!this.sessions.has(parsed.sessionId)) {
+      throw new Error(`Session not found: ${parsed.sessionId}`);
     }
     
     const oldSessionId = this.currentSessionId;
-    this.currentSessionId = sessionId;
+    this.currentSessionId = parsed.sessionId;
     
-    const session = this.sessions.get(sessionId)!;
+    const session = this.sessions.get(parsed.sessionId)!;
     const state = this.getSessionState(session);
     
     return {
@@ -633,7 +657,7 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
           type: 'text',
           text: JSON.stringify({
             success: true,
-            message: `Switched to session: ${sessionId}`,
+            message: `Switched to session: ${parsed.sessionId}`,
             previousSession: oldSessionId,
             currentSession: this.currentSessionId,
             state: state
@@ -666,61 +690,39 @@ NESTED PROOFS: Use start_nested_proof for sub-goals, finalize_nested_proof to ad
     };
   }
 
-  private objectToFact(obj: any): Fact {
+  private convertToFact(factData: FactType): Fact {
     return {
-      kind: obj.kind,
-      lhs: this.objectToExpr(obj.lhs),
-      rhs: this.objectToExpr(obj.rhs)
+      kind: factData.kind,
+      lhs: this.convertToExpr(factData.lhs),
+      rhs: this.convertToExpr(factData.rhs)
     };
   }
 
-  private objectToExpr(obj: any): any {
-    if (!obj || typeof obj !== 'object') {
-      throw new Error('Expression must be an object');
-    }
+  private convertToExpr(exprData: Expression): any {
+    const validated = ExpressionSchema.parse(exprData);
     
-    if (!obj.type) {
-      throw new Error('Expression must have a type field');
-    }
-    
-    switch (obj.type) {
+    switch (validated.type) {
       case 'var':
-        if (!obj.name || typeof obj.name !== 'string') {
-          throw new Error('Variable expression must have a name string');
-        }
-        break;
+        return validated;
       case 'const':
-        if (obj.value === undefined) {
-          throw new Error('Constant expression must have a value');
-        }
-        break;
+        return validated;
       case 'op':
-        if (!obj.op || !['add', 'sub', 'mul', 'div', 'neg', 'pow'].includes(obj.op)) {
-          throw new Error('Operation expression must have valid op field');
-        }
-        if (!Array.isArray(obj.args)) {
-          throw new Error('Operation expression must have args array');
-        }
-        obj.args = obj.args.map((arg: any) => this.objectToExpr(arg));
-        break;
+        return {
+          ...validated,
+          args: validated.args.map(arg => this.convertToExpr(arg))
+        };
       case 'func':
-        if (!obj.name || !['conj', 'Re', 'Im', 'sqnorm'].includes(obj.name)) {
-          throw new Error('Function expression must have valid name field');
-        }
-        if (!Array.isArray(obj.args)) {
-          throw new Error('Function expression must have args array');
-        }
-        obj.args = obj.args.map((arg: any) => this.objectToExpr(arg));
-        break;
+        return {
+          ...validated,
+          args: validated.args.map(arg => this.convertToExpr(arg))
+        };
       default:
-        throw new Error(`Unknown expression type: ${obj.type}`);
+        throw new Error(`Unknown expression type: ${(validated as any).type}`);
     }
-    
-    return obj;
   }
 
-  private objectToCommand(obj: any): Command {
-    return obj as Command;
+  private convertToCommand(commandData: CommandType): Command {
+    return commandData as Command;
   }
 
   private factToString(fact: Fact): string {
