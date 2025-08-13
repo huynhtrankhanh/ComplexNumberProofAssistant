@@ -155,9 +155,9 @@ export function exprToMathJSStringOpaque(expr: Expr): string {
     case 'var': return expr.name;
     case 'const': return (typeof expr.value === 'number') ? String(expr.value) : String(expr.value);
     case 'op': {
-      if (expr.op === 'add') return expr.args.map(exprToMathJSStringOpaque).join(' + ');
+      if (expr.op === 'add') return "(" + expr.args.map(exprToMathJSStringOpaque).join(' + ') + ")";
       if (expr.op === 'sub') return `(${exprToMathJSStringOpaque(expr.args[0])} - ${exprToMathJSStringOpaque(expr.args[1])})`;
-      if (expr.op === 'mul') return expr.args.map(a => `(${exprToMathJSStringOpaque(a)})`).join(' * ');
+      if (expr.op === 'mul') return "(" + expr.args.map(a => `(${exprToMathJSStringOpaque(a)})`).join(' * ') + ")";
       if (expr.op === 'div') return `(${exprToMathJSStringOpaque(expr.args[0])} / ${exprToMathJSStringOpaque(expr.args[1])})`;
       if (expr.op === 'neg') return `(-${exprToMathJSStringOpaque(expr.args[0])})`;
       if (expr.op === 'pow') return `(${exprToMathJSStringOpaque(expr.args[0])} ^ ${exprToMathJSStringOpaque(expr.args[1])})`;
@@ -175,9 +175,9 @@ export function exprToMathJSStringReal(expr: Expr): string {
     case 'var': return expr.name;
     case 'const': return (typeof expr.value === 'number') ? String(expr.value) : String(expr.value);
     case 'op': {
-      if (expr.op === 'add') return expr.args.map(exprToMathJSStringReal).join(' + ');
+      if (expr.op === 'add') return "(" + expr.args.map(exprToMathJSStringReal).join(' + ') + ")";
       if (expr.op === 'sub') return `(${exprToMathJSStringReal(expr.args[0])} - ${exprToMathJSStringReal(expr.args[1])})`;
-      if (expr.op === 'mul') return expr.args.map(a => `(${exprToMathJSStringReal(a)})`).join(' * ');
+      if (expr.op === 'mul') return "(" + expr.args.map(a => `(${exprToMathJSStringReal(a)})`).join(' * ') + ")";
       if (expr.op === 'div') return `(${exprToMathJSStringReal(expr.args[0])} / ${exprToMathJSStringReal(expr.args[1])})`;
       if (expr.op === 'neg') return `(-${exprToMathJSStringReal(expr.args[0])})`;
       if (expr.op === 'pow') return `(${exprToMathJSStringReal(expr.args[0])} ^ ${exprToMathJSStringReal(expr.args[1])})`;
@@ -388,6 +388,7 @@ export class Prover {
       if (!matched) { this.logger('A denominator was not proven non-zero: ' + exprToReadableString(d)); return false; }
     }
     const diff = `(${exprToMathJSStringOpaque(goal.lhs)}) - (${exprToMathJSStringOpaque(goal.rhs)})`;
+    console.log("original expression", diff);
     try {
       const s = math.simplify(math.rationalize(math.simplify(diff as any)));
       const sStr = s.toString(); this.logger(`math.simplify -> ${sStr}`);
