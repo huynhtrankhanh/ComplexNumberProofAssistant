@@ -435,18 +435,14 @@ export class Prover {
       const f = ruleFromContext as FactEq;
       const occA = findOccurrencesInExpr(state.goal.lhs, f.lhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: deepClone(f.rhs) }));
       const occAonR = findOccurrencesInExpr(state.goal.rhs, f.lhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: deepClone(f.rhs) }));
-      const occB = findOccurrencesInExpr(state.goal.lhs, f.rhs).map(p => ({ path: ['lhs', ...p] as Path, replaceWith: deepClone(f.lhs) }));
-      const occBonR = findOccurrencesInExpr(state.goal.rhs, f.rhs).map(p => ({ path: ['rhs', ...p] as Path, replaceWith: deepClone(f.lhs) }));
-      occurrences.push(...occA, ...occAonR, ...occB, ...occBonR);
+      occurrences.push(...occA, ...occAonR);
     }
 
     if (ruleFromRegistry) {
       const rule = ruleFromRegistry;
       const occLHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.lhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
       const occLHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.lhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.rhs, x.bindings) }));
-      const occRHS = findPatternOccurrencesInExpr(state.goal.lhs, rule.rhs).map(x => ({ path: ['lhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
-      const occRHS_R = findPatternOccurrencesInExpr(state.goal.rhs, rule.rhs).map(x => ({ path: ['rhs', ...x.path] as Path, replaceWith: instantiate(rule.lhs, x.bindings) }));
-      occurrences.push(...occLHS, ...occLHS_R, ...occRHS, ...occRHS_R);
+      occurrences.push(...occLHS, ...occLHS_R);
     }
 
     if (occurrences.length < (cmd.occurrence || 1)) { this.logger('再写: occurrence not found'); return false; }
