@@ -11,7 +11,6 @@ interface ExecutedCommand {
 
 export interface ProofSessionOptions {
   hypotheses?: Record<string, Fact>;
-  rewriteRules?: Record<string, { lhs: Expr; rhs: Expr }>;
   logger?: (message: string) => void;
 }
 
@@ -41,7 +40,7 @@ export class ProofSession {
     this.originalGoal = deepClone(goal);
     
     // Initialize prover with custom rewrite rules if provided
-    const rules = options.rewriteRules || DEFAULT_REWRITE_RULES;
+    const rules = DEFAULT_REWRITE_RULES;
     this.prover = new Prover(rules);
     this.prover.setLogger(this.logger);
     
@@ -118,7 +117,6 @@ export class ProofSession {
     
     const mergedOptions: ProofSessionOptions = {
       hypotheses: { ...inheritedHypotheses, ...(options.hypotheses || {}) },
-      rewriteRules: options.rewriteRules || this.prover.rewriteRules,
       logger: options.logger || this.logger
     };
     
