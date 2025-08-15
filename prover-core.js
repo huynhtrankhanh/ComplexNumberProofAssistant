@@ -268,6 +268,9 @@ function exprToMathJSStringOpaque(expr) {
             return (function (x) { return x; })(expr.op);
         }
         case 'func': {
+            // if subtree is constant we use the real function
+            if (isConstantExpr(expr))
+                return exprToMathJSStringReal(expr);
             var fname = OPAQUE_FUNC_MAP[expr.name] || expr.name;
             return hash("".concat(fname, "(").concat(expr.args.map(exprToMathJSStringOpaque).join(','), ")"));
         }

@@ -289,7 +289,7 @@ export const DEFAULT_REWRITE_RULES: Record<string, { lhs: Expr; rhs: Expr }> = {
   conj_neg: { lhs: Expr.func('conj', Expr.neg(Expr.var('?a'))), rhs: Expr.neg(Expr.func('conj', Expr.var('?a'))) },
   sqnorm_def: { lhs: Expr.func('sqnorm', Expr.var('?a')), rhs: Expr.mul(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))) },
   re_def: { lhs: Expr.func('Re', Expr.var('?a')), rhs: Expr.div(Expr.add(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
-  im_def: { lhs: Expr.func('Im', Expr.var('?a')), rhs: Expr.div(Expr.sub(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.const(2)) },
+  im_def: { lhs: Expr.func('Im', Expr.var('?a')), rhs: Expr.div(Expr.sub(Expr.var('?a'), Expr.func('conj', Expr.var('?a'))), Expr.mul(Expr.const(2), Expr.var('i'))) },
   i_square: { lhs: Expr.mul(Expr.var('i'), Expr.var('i')), rhs: Expr.const(-1) },
 };
 
