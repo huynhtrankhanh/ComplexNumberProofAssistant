@@ -169,6 +169,8 @@ export function exprToMathJSStringOpaque(expr: Expr): string {
       return ((x: never): string => x)(expr.op);
     }
     case 'func': {
+      // if subtree is constant we use the real function
+      if (isConstantExpr(expr)) return exprToMathJSStringReal(expr);
       const fname = OPAQUE_FUNC_MAP[expr.name] || expr.name;
       return hash(`${fname}(${expr.args.map(exprToMathJSStringOpaque).join(',')})`);
     }
