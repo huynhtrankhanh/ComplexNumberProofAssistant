@@ -29,7 +29,7 @@ export interface CmdCertain { cmd: '确定'; }
 // Utilities
 ////////////////////////
 
-function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)); }
+export function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)); }
 
 export function exprEquals(a: Expr, b: Expr): boolean {
   if (a.type !== b.type) return false;

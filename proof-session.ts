@@ -1,4 +1,4 @@
-import { Prover, Context, Expr, DEFAULT_REWRITE_RULES, factToReadable, exprToReadableString } from './prover-core.js';
+import { Prover, Context, Expr, DEFAULT_REWRITE_RULES, factToReadable, exprToReadableString, deepClone } from './prover-core.js';
 import type { Fact, Command } from "./prover-core.js";
 
 type State = { goal: Fact; context: Context; explicitCompletion: boolean };
@@ -17,6 +17,7 @@ export interface ProofSessionOptions {
 
 export class ProofSession {
   private state: State;
+  private originalGoal: Fact;
   private prover: Prover;
   private parent: ProofSession | null;
   private children: Set<ProofSession>;
@@ -37,6 +38,7 @@ export class ProofSession {
     this.executedCommands = [];
     this.childProofs = new Map();
     this.logger = options.logger || (() => {});
+    this.originalGoal = deepClone(goal);
     
     // Initialize prover with custom rewrite rules if provided
     const rules = options.rewriteRules || DEFAULT_REWRITE_RULES;
@@ -66,6 +68,8 @@ export class ProofSession {
       this.parent.children.add(this);
     }
   }
+
+  public getOriginalGoal() { return deepClone(this.originalGoal); }
 
   /**
    * Execute a single command in this session
@@ -144,7 +148,7 @@ export class ProofSession {
     }
     
     // Add the proven goal as a fact in this session's context
-    const provenGoal = childSession.getGoal();
+    const provenGoal = childSession.getOriginalGoal();
     this.state.context.addFact(factName, provenGoal);
     
     // Track the child proof
@@ -277,222 +281,6 @@ export class ProofSession {
       }
     }
     return cleaned;
-  }
-
-  // ========================
-  // SERIALIZATION METHODS
-  // ========================
-
-  /**
-   * Convert a Fact to Chinese theorem prover syntax
-   */
-  private factToChinese(fact: Fact): string {
-    const lhsStr = this.exprToChinese(fact.lhs);
-    const rhsStr = this.exprToChinese(fact.rhs);
-    
-    if (fact.kind === 'eq') {
-      return `${lhsStr} = ${rhsStr}`;
-    } else {
-      return `${lhsStr} ≠ ${rhsStr}`;
-    }
-  }
-
-  /**
-   * Convert an Expr to Chinese theorem prover syntax
-   */
-  private exprToChinese(expr: Expr): string {
-    switch (expr.type) {
-      case 'var':
-        return expr.name;
-        
-      case 'const':
-        return String(expr.value);
-        
-      case 'op':
-        switch (expr.op) {
-          case 'add':
-            return expr.args.map(a => this.exprToChinese(a)).join(' + ');
-          case 'sub':
-            return `(${this.exprToChinese(expr.args[0])} - ${this.exprToChinese(expr.args[1])})`;
-          case 'mul':
-            return expr.args.map(a => `${this.exprToChinese(a)}`).join(' * ');
-          case 'div':
-            return `${this.exprToChinese(expr.args[0])} / ${this.exprToChinese(expr.args[1])}`;
-          case 'neg':
-            return `-${this.exprToChinese(expr.args[0])}`;
-          case 'pow':
-            return `${this.exprToChinese(expr.args[0])} ^ ${this.exprToChinese(expr.args[1])}`;
-        }
-        break;
-        
-      case 'func':
-        const args = expr.args.map(a => this.exprToChinese(a)).join(' ');
-        return `${expr.name} ${args}`;
-    }
-    
-    return exprToReadableString(expr);
-  }
-
-  /**
-   * Convert a Command to Chinese theorem prover syntax
-   */
-  private commandToChinese(cmd: Command): string {
-    switch (cmd.cmd) {
-      case '多能':
-        if (cmd.denomProofs && cmd.denomProofs.length > 0) {
-          return `多能 [${cmd.denomProofs.join(', ')}]`;
-        }
-        return '多能';
-        
-      case '不利':
-        // This should be handled as a nested 有 statement
-        return `有 ${cmd.newName} : ${this.exprToChinese(cmd.component)} ≠ 0 是 不利 ${cmd.hypothesis}`;
-        
-      case '反证':
-        return `反证 ${cmd.hypName}`;
-        
-      case '再写':
-        if (cmd.occurrence) {
-          return `再写 在 ${cmd.occurrence} ${cmd.equalityName}`;
-        }
-        return `再写 ${cmd.equalityName}`;
-        
-      case '重反':
-        return `重反 ${cmd.oldName} 成 ${cmd.newName}`;
-        
-      case '确定':
-        return '确定';
-        
-      default:
-        return JSON.stringify(cmd);
-    }
-  }
-
-  /**
-   * Serialize this session to Chinese theorem prover syntax
-   */
-  serialize(factName?: string): string {
-    const goalStr = this.factToChinese(this.state.goal);
-    const name = factName || `goal_${this.sessionId}`;
-    
-    const proofLines = this.serializeProof(2); // Start with 2-space indent
-    
-    if (proofLines.length === 0) {
-      return `有 ${name} : ${goalStr} 是\n  // 证明未完成`;
-    }
-    
-    return `有 ${name} : ${goalStr} 是\n${proofLines.join('\n')}`;
-  }
-
-  /**
-   * Serialize the proof part of this session
-   */
-  private serializeProof(indent: number): string[] {
-    const lines: string[] = [];
-    const indentStr = ' '.repeat(indent);
-    
-    // Process executed commands
-    for (const execCmd of this.executedCommands) {
-      if (!execCmd.success) {
-        lines.push(`${indentStr}// 失败的命令: ${this.commandToChinese(execCmd.command)}`);
-        continue;
-      }
-      
-      const cmd = execCmd.command;
-      
-      // Handle 不利 commands specially (they create nested facts)
-      if (cmd.cmd === '不利') {
-        lines.push(`${indentStr}${this.commandToChinese(cmd)}`);
-      } else {
-        lines.push(`${indentStr}${this.commandToChinese(cmd)}`);
-      }
-    }
-    
-    // Add completed child proofs
-    for (const [childSession, factName] of this.childProofs.entries()) {
-      const childSerialization = childSession.serialize(factName);
-      const childLines = childSerialization.split('\n');
-      for (const line of childLines) {
-        lines.push(`${indentStr}${line}`);
-      }
-    }
-    
-    // Add incomplete child sessions as comments
-    for (const childSession of this.children) {
-      if (!childSession.isComplete()) {
-        const childGoal = this.factToChinese(childSession.getGoal());
-        lines.push(`${indentStr}// 未完成的子证明:`);
-        lines.push(`${indentStr}// 有 子目标 : ${childGoal} 是`);
-        
-        const childProofLines = childSession.serializeProof(indent + 4);
-        for (const line of childProofLines) {
-          lines.push(`${indentStr}// ${line.trim()}`);
-        }
-        
-        if (childProofLines.length === 0) {
-          lines.push(`${indentStr}//   // 无执行的命令`);
-        }
-      }
-    }
-    
-    // If session is incomplete and no commands executed
-    if (!this.isComplete() && this.executedCommands.length === 0 && this.children.size === 0) {
-      lines.push(`${indentStr}// 证明未开始`);
-    }
-    
-    return lines;
-  }
-
-  /**
-   * Serialize the full session tree (including parent context if any)
-   */
-  serializeWithContext(): string {
-    const lines: string[] = [];
-    
-    // Add context facts as comments
-    const hypotheses = this.getHypotheses();
-    if (Object.keys(hypotheses).length > 0) {
-      lines.push('// 上下文:');
-      for (const [name, fact] of Object.entries(hypotheses)) {
-        // Don't include facts that were proven in child sessions
-        let isChildProof = false;
-        for (const childSession of this.childProofs.keys()) {
-          if (this.childProofs.get(childSession) === name) {
-            isChildProof = true;
-            break;
-          }
-        }
-        
-        if (!isChildProof) {
-          lines.push(`// ${name}: ${this.factToChinese(fact)}`);
-        }
-      }
-      lines.push('');
-    }
-    
-    // Add the main proof
-    lines.push(this.serialize());
-    
-    return lines.join('\n');
-  }
-
-  /**
-   * Get a summary of the serialization status
-   */
-  getSerializationSummary(): string {
-    const totalCommands = this.executedCommands.length;
-    const successfulCommands = this.executedCommands.filter(c => c.success).length;
-    const completedChildren = this.childProofs.size;
-    const incompleteChildren = this.children.size;
-    
-    return [
-      `序列化摘要 - ${this.sessionId}:`,
-      `目标: ${this.factToChinese(this.state.goal)}`,
-      `已执行命令: ${successfulCommands}/${totalCommands}`,
-      `已完成子证明: ${completedChildren}`,
-      `未完成子证明: ${incompleteChildren}`,
-      `证明状态: ${this.isComplete() ? '完成' : '进行中'}`
-    ].join('\n');
   }
 }
 
