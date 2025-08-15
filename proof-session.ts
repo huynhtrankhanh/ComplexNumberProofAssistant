@@ -246,20 +246,6 @@ export class ProofSession {
   }
 
   /**
-   * Add a fact directly to the context (use with caution)
-   */
-  addFact(name: string, fact: Fact): boolean {
-    try {
-      this.state.context.addFact(name, fact);
-      this.logger(`Manually added fact '${name}': ${factToReadable(fact)}`);
-      return true;
-    } catch (error) {
-      this.logger(`Error adding fact '${name}': ${(error as Error).message}`);
-      return false;
-    }
-  }
-
-  /**
    * Get a summary of the session's current state
    */
   getSummary(): string {
