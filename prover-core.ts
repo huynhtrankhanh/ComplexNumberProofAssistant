@@ -1,4 +1,9 @@
 import * as math from 'mathjs';
+import { v4 as uuid } from "uuid";
+import { createHash } from "crypto";
+
+const runtimeNonce = uuid() + uuid();
+const hash = (x: string) => "aa" + createHash("sha256").update(x + runtimeNonce).digest('hex');
 
 ////////////////////////
 // AST Types
@@ -165,7 +170,7 @@ export function exprToMathJSStringOpaque(expr: Expr): string {
     }
     case 'func': {
       const fname = OPAQUE_FUNC_MAP[expr.name] || expr.name;
-      return `${fname}(${expr.args.map(exprToMathJSStringOpaque).join(',')})`;
+      return hash(`${fname}(${expr.args.map(exprToMathJSStringOpaque).join(',')})`);
     }
   }
 }
