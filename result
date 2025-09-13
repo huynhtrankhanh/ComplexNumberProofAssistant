@@ -1,0 +1,56 @@
+=== ULTRA-PROPER PROOF: START ===
+Added hypothesis 'hd': A ≠ B
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Created session_1 with goal: sqnorm((O - A)) = sqnorm((O - B))
+
+--- Step 1: Proving A-B != 0 (h_AB_ne0) ---
+Added hypothesis 'hd': A ≠ B
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Created session_2 with goal: (A - B) ≠ 0
+Started nested proof session_2 from session_1
+Executing command in session_2: {"cmd":"反证","hypName":"hd"}
+反证 applied: replaced 'hd' with (A - B) = 0; new goal A = B
+Added hypothesis 'hd': (A - B) = 0
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Created session_3 with goal: A = (A - B) + B
+Started nested proof session_3 from session_2
+Executing command in session_3: {"cmd":"多能"}
+original expression (A) - (((A - B) + B))
+math.simplify -> 0
+frame complete
+hooray! it's an explicit completion
+Goal proved in session_3!
+hooray! it's an explicit completion
+Finalized nested proof: added 'h_id_A': A = (A - B) + B
+Executing command in session_2: {"cmd":"再写","equalityName":"h_id_A"}
+再写 applied at occurrence undefined using h_id_A
+Executing command in session_2: {"cmd":"再写","equalityName":"hd"}
+再写 applied at occurrence undefined using hd
+Executing command in session_2: {"cmd":"多能"}
+original expression ((0 + B)) - (B)
+math.simplify -> 0
+frame complete
+hooray! it's an explicit completion
+Goal proved in session_2!
+hooray! it's an explicit completion
+hooray! it's an explicit completion
+Finalized nested proof: added 'h_AB_ne0': (A - B) ≠ 0
+
+--- Step 2: Proving conj(A-B) != 0 (h_cAB_ne0) ---
+Added hypothesis 'hd': A ≠ B
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Added hypothesis 'h_AB_ne0': (A - B) ≠ 0
+Created session_4 with goal: conj((A - B)) ≠ 0
+Started nested proof session_4 from session_1
+Executing command in session_4: {"cmd":"反证","hypName":"h_AB_ne0"}
+反证 applied: replaced 'h_AB_ne0' with conj((A - B)) = 0; new goal (A - B) = 0
+Executing command in session_4: {"cmd":"再写","equalityName":"conj_inv"}
+再写: occurrence not found
+Executing command in session_4: {"cmd":"再写","equalityName":"h_AB_ne0"}
+再写: occurrence not found
+Executing command in session_4: {"cmd":"确定"}
+确定: not both sides constant

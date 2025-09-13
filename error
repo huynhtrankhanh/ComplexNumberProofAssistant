@@ -1,0 +1,11 @@
+file:///workspaces/ComplexNumberProofAssistant/dist/ultra_proper_proof.js:98
+    throw new Error("Failed to prove h_cAB_ne0");
+          ^
+
+Error: Failed to prove h_cAB_ne0
+    at file:///workspaces/ComplexNumberProofAssistant/dist/ultra_proper_proof.js:98:11
+    at ModuleJob.run (node:internal/modules/esm/module_job:329:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:644:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.17.0
