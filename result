@@ -24,6 +24,7 @@ frame complete
 hooray! it's an explicit completion
 Goal proved in session_3!
 hooray! it's an explicit completion
+hooray! it's an explicit completion
 Finalized nested proof: added 'h_id_A': A = (A - B) + B
 Executing command in session_2: {"cmd":"再写","equalityName":"h_id_A"}
 再写 applied at occurrence undefined using h_id_A
@@ -48,9 +49,126 @@ Created session_4 with goal: conj((A - B)) ≠ 0
 Started nested proof session_4 from session_1
 Executing command in session_4: {"cmd":"反证","hypName":"h_AB_ne0"}
 反证 applied: replaced 'h_AB_ne0' with conj((A - B)) = 0; new goal (A - B) = 0
-Executing command in session_4: {"cmd":"再写","equalityName":"conj_inv"}
-再写: occurrence not found
+Added hypothesis 'hd': A ≠ B
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Added hypothesis 'h_AB_ne0': conj((A - B)) = 0
+Created session_5 with goal: (A - B) = conj(conj((A - B)))
+Started nested proof session_5 from session_4
+Executing command in session_5: {"cmd":"再写","equalityName":"conj_inv"}
+再写 applied at occurrence undefined using conj_inv
+Goal proved in session_5!
+Finalized nested proof: added 'h_id_conj_inv': (A - B) = conj(conj((A - B)))
+Executing command in session_4: {"cmd":"再写","equalityName":"h_id_conj_inv"}
+再写 applied at occurrence undefined using h_id_conj_inv
 Executing command in session_4: {"cmd":"再写","equalityName":"h_AB_ne0"}
-再写: occurrence not found
+再写 applied at occurrence undefined using h_AB_ne0
 Executing command in session_4: {"cmd":"确定"}
-确定: not both sides constant
+确定: simplify -> 0
+frame complete
+hooray! it's an explicit completion
+Goal proved in session_4!
+hooray! it's an explicit completion
+hooray! it's an explicit completion
+Finalized nested proof: added 'h_cAB_ne0': conj((A - B)) ≠ 0
+
+--- Step 3: Proving Re-Connection Identity (h_Re_connection) ---
+Added hypothesis 'hd': A ≠ B
+Added hypothesis 'hm': M = (A + B / 2)
+Added hypothesis 'hp': Re(((O - M) / (A - B))) = 0
+Added hypothesis 'h_AB_ne0': (A - B) ≠ 0
+Added hypothesis 'h_cAB_ne0': conj((A - B)) ≠ 0
+Created session_6 with goal: Re((O - M) * conj((A - B))) = Re(((O - M) / (A - B))) * sqnorm((A - B))
+Started nested proof session_6 from session_1
+Executing command in session_6: {"cmd":"再写","equalityName":"re_def","occurrence":1}
+再写 applied at occurrence 1 using re_def
+Executing command in session_6: {"cmd":"再写","equalityName":"re_def","occurrence":1}
+再写 applied at occurrence 1 using re_def
+Executing command in session_6: {"cmd":"再写","equalityName":"sqnorm_def","occurrence":1}
+再写 applied at occurrence 1 using sqnorm_def
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写 applied at occurrence 1 using conj_div
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写 applied at occurrence 1 using conj_mul
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写 applied at occurrence 1 using conj_sub
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_add","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_neg","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_inv","occurrence":1}
+再写 applied at occurrence 1 using conj_inv
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_add","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_neg","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_inv","occurrence":1}
+再写 applied at occurrence 1 using conj_inv
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_div","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_mul","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_sub","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_add","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_neg","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"再写","equalityName":"conj_inv","occurrence":1}
+再写: occurrence not found
+Executing command in session_6: {"cmd":"多能","denomProofs":["h_AB_ne0","h_cAB_ne0"]}
+A denominator was not proven non-zero: (conj(A) - conj(B))
