@@ -1,5 +1,5 @@
 import { ProofSession } from './proof-session.js';
-// Fix 1: Import Fact using 'import type' as it is a type definition.
+// Import Fact using 'import type' as it is a type definition.
 import { Expr, factToReadable } from './prover-core.js';
 import type { Fact } from './prover-core.js';
 
@@ -22,6 +22,9 @@ const E_sqnorm_OA = Expr.sqnorm(E_O_minus_A);
 const E_sqnorm_OB = Expr.sqnorm(E_O_minus_B);
 const E_sqnorm_AB = Expr.sqnorm(E_A_minus_B);
 const E_conj_A_minus_B = Expr.conj(E_A_minus_B);
+// Define the normalized form: conj(A) - conj(B)
+const E_cA_minus_cB = Expr.sub(Expr.conj(A), Expr.conj(B));
+
 
 const hypotheses: Record<string, Fact> = {
   'hd': Expr.neq(A, B), // A != B
@@ -38,17 +41,17 @@ const goal = Expr.eq(
 );
 
 // Initialize the proof session
-// Note: The visualization in the logs might render (A+B)/2 as (A + B / 2) due to the simple
-// implementation of exprToReadableString in prover-core.ts, but the AST is correct.
+// Note on logs: The visualization might render (A+B)/2 as (A + B / 2) due to the simple
+// implementation of exprToReadableString, but the AST structure is correct.
 const session = new ProofSession(goal, { hypotheses, logger: console.log });
 
 // Helper function to print the current goal
 const printGoal = (s: ProofSession = session) => console.log("Current Goal:", factToReadable(s.getGoal()));
 
-// Helper function to exhaustively apply conjugate simplification rules
+// Helper function to exhaustively apply conjugate simplification rules (Normalization)
 const simplify_conj = (s: ProofSession) => {
     let changed = true;
-    // Keep applying rules until no more changes occur (normalization).
+    // Keep applying rules until no more changes occur.
     while(changed) {
         changed = false;
         const rules = ['conj_div', 'conj_mul', 'conj_sub', 'conj_add', 'conj_neg', 'conj_inv'];
@@ -65,11 +68,10 @@ const simplify_conj = (s: ProofSession) => {
 /*
 Proof Strategy Overview:
 We aim to show |O-A|^2 - |O-B|^2 = 0.
-We will prove two key identities:
 1. Geometric Identity (using 'hm'): |O-A|^2 - |O-B|^2 = -2 * Re((O-M) * conj(A-B)).
 2. Complex Algebra Identity: Re(Z*conj(W)) = Re(Z/W) * |W|^2.
-Combining these and using 'hp' (which sets Re((O-M)/(A-B)) = 0) proves the goal.
-This requires proving W!=0 (i.e., A-B!=0).
+Combining these and using 'hp' proves the goal.
+This requires proving W!=0 (i.e., A-B!=0 and its normalized conjugate form).
 */
 
 // =================================================================
@@ -82,19 +84,18 @@ console.log("\n--- Step 1: Proving A-B != 0 (h_AB_ne0) ---");
 const nested1 = session.startNestedProof(Expr.neq(E_A_minus_B, C0));
 
 // Apply proof by contradiction (反证).
-// New Goal: A=B. Assumption ('hd'): A-B=0.
 nested1.runCommand({ cmd: '反证', hypName: 'hd' });
+// New Goal: A=B. Assumption ('hd'): A-B=0.
 
-// Prove identity A = (A-B) + B to introduce A-B.
+// Prove identity A = (A-B) + B.
 const nested1_1 = nested1.startNestedProof(Expr.eq(A, Expr.add(E_A_minus_B, B)));
 nested1_1.runCommand({ cmd: '多能' });
 if (!nested1_1.isComplete()) throw new Error("Failed Step 1.1");
 nested1.finalizeNestedProof(nested1_1, 'h_id_A');
 
-// Rewrite A using the identity. Goal: A=B
+// Rewrite A using the identity.
 nested1.runCommand({ cmd: '再写', equalityName: 'h_id_A' });
-// Goal: (A-B) + B = B.
-// Rewrite A-B using the assumption 'hd' (A-B=0).
+// Rewrite A-B using the assumption 'hd'.
 nested1.runCommand({ cmd: '再写', equalityName: 'hd' });
 // Goal: 0 + B = B.
 nested1.runCommand({ cmd: '多能' });
@@ -104,7 +105,6 @@ session.finalizeNestedProof(nested1, 'h_AB_ne0');
 
 // =================================================================
 // Step 2: Proving conj(A-B) != 0. (h_cAB_ne0)
-// Required for algebraic manipulations in Step 3.
 // =================================================================
 
 console.log("\n--- Step 2: Proving conj(A-B) != 0 (h_cAB_ne0) ---");
@@ -113,34 +113,55 @@ console.log("\n--- Step 2: Proving conj(A-B) != 0 (h_cAB_ne0) ---");
 const nested2 = session.startNestedProof(Expr.neq(E_conj_A_minus_B, C0));
 
 // Apply proof by contradiction (反证).
-// New Goal: A-B = 0. Assumption ('h_AB_ne0'): conj(A-B)=0.
 nested2.runCommand({ cmd: '反证', hypName: 'h_AB_ne0' });
-
-// Fix 2: We want to rewrite A-B as conj(conj(A-B)).
-// However, '再写' only applies rules L->R. 'conj_inv' is conj(conj(X))->X.
-// We must first prove the identity A-B = conj(conj(A-B)).
+// New Goal: A-B = 0. Assumption ('h_AB_ne0'): conj(A-B)=0.
 
 // Prove the identity A-B = conj(conj(A-B)).
 const nested2_1 = nested2.startNestedProof(Expr.eq(E_A_minus_B, Expr.conj(E_conj_A_minus_B)));
 // Apply conj_inv on the RHS.
 nested2_1.runCommand({ cmd: '再写', equalityName: 'conj_inv' });
-// Goal: A-B = A-B. (Implicitly complete).
 if (!nested2_1.isComplete()) throw new Error("Failed Step 2.1");
 nested2.finalizeNestedProof(nested2_1, 'h_id_conj_inv');
 
-// Use the proven identity h_id_conj_inv to rewrite the goal (A-B = 0).
+// Use the proven identity.
 nested2.runCommand({ cmd: '再写', equalityName: 'h_id_conj_inv' });
 // Goal: conj(conj(A-B)) = 0.
-
-// Use the assumption 'h_AB_ne0' (which is now conj(A-B)=0).
+// Use the assumption 'h_AB_ne0'.
 nested2.runCommand({ cmd: '再写', equalityName: 'h_AB_ne0' });
 // Goal: conj(0) = 0.
-
-// Evaluate constant expression.
 nested2.runCommand({ cmd: '确定' });
 
 if (!nested2.isComplete()) throw new Error("Failed Step 2");
 session.finalizeNestedProof(nested2, 'h_cAB_ne0');
+
+// =================================================================
+// Step 2.5: Proving conj(A) - conj(B) != 0. (h_cA_minus_cB_ne0)
+// FIX: The '多能' command requires an exact structural match for denominator proofs.
+// Since 'simplify_conj' normalizes conj(A-B) into conj(A)-conj(B), we must prove
+// this normalized form is non-zero before using '多能' in Step 3.
+// =================================================================
+
+console.log("\n--- Step 2.5: Proving conj(A) - conj(B) != 0 (h_cA_minus_cB_ne0) ---");
+
+// Goal: conj(A) - conj(B) != 0.
+const nested2_5 = session.startNestedProof(Expr.neq(E_cA_minus_cB, C0));
+
+// Prove the identity conj(A)-conj(B) = conj(A-B).
+const nested2_5_1 = nested2_5.startNestedProof(Expr.eq(E_cA_minus_cB, E_conj_A_minus_B));
+// Apply conj_sub rule (L->R) on the RHS.
+nested2_5_1.runCommand({ cmd: '再写', equalityName: 'conj_sub'});
+// Goal: conj(A)-conj(B) = conj(A)-conj(B). (Implicitly complete).
+if (!nested2_5_1.isComplete()) throw new Error("Failed Step 2.5.1");
+nested2_5.finalizeNestedProof(nested2_5_1, 'h_id_norm_sub');
+
+// Rewrite the goal using the identity.
+nested2_5.runCommand({ cmd: '再写', equalityName: 'h_id_norm_sub'});
+// Goal: conj(A-B) != 0.
+// This is exactly the fact 'h_cAB_ne0', so the prover marks it as complete.
+
+if (!nested2_5.isComplete()) throw new Error("Failed Step 2.5");
+session.finalizeNestedProof(nested2_5, 'h_cA_minus_cB_ne0');
+
 
 // =================================================================
 // Step 3: Prove the Complex Algebra Identity (h_Re_connection).
@@ -161,12 +182,12 @@ nested3.runCommand({ cmd: '再写', equalityName: 're_def', occurrence: 1 });
 nested3.runCommand({ cmd: '再写', equalityName: 're_def', occurrence: 1 });
 nested3.runCommand({ cmd: '再写', equalityName: 'sqnorm_def', occurrence: 1 });
 
-// Simplify conjugates exhaustively.
+// Simplify conjugates exhaustively. This transforms denominators into their normalized forms.
 simplify_conj(nested3);
 
-// Use '多能'. The expansion introduces variable denominators A-B and conj(A-B).
-// We must provide proofs that they are non-zero.
-nested3.runCommand({ cmd: '多能', denomProofs: ['h_AB_ne0', 'h_cAB_ne0'] });
+// Use '多能'. The expansion and normalization introduces denominators A-B and conj(A)-conj(B).
+// We must provide the corresponding proofs.
+nested3.runCommand({ cmd: '多能', denomProofs: ['h_AB_ne0', 'h_cA_minus_cB_ne0'] });
 
 if (!nested3.isComplete()) throw new Error("Failed Step 3");
 session.finalizeNestedProof(nested3, 'h_Re_connection');
@@ -174,7 +195,6 @@ session.finalizeNestedProof(nested3, 'h_Re_connection');
 // =================================================================
 // Step 4: Prove the Geometric Identity (h_GeometricIdentity).
 // Identity: |O-A|^2 - |O-B|^2 = -2 Re((O-M)c(A-B)).
-// This relies on 'hm' (M is midpoint).
 // =================================================================
 
 console.log("\n--- Step 4: Proving the Main Geometric Identity (h_GeometricIdentity) ---");
@@ -195,16 +215,14 @@ nested4.runCommand({ cmd: '再写', equalityName: 're_def', occurrence: 1 });
 // Simplify conjugates before substitution.
 simplify_conj(nested4);
 
-// Substitute M using 'hm'. M=(A+B)/2.
-// After expansion, M appears multiple times (e.g., in O-M and inside conj(O-M)).
-// '再写' only substitutes one occurrence at a time. We must iterate until all M are gone,
-// otherwise '多能' (which treats variables opaquely) will fail.
+// Substitute M using 'hm'. M=(A+B)/2. Iterate until all M (including those inside conj(M)) are substituted.
+// '再写' works recursively, so this handles both M and conj(M).
 while(nested4.runCommand({ cmd: '再写', equalityName: 'hm', occurrence: 1 })) {}
 
 // Simplify conjugates again after substitution (e.g. conj((A+B)/2)).
 simplify_conj(nested4);
 
-// Algebraic simplification.
+// Algebraic simplification. No variable denominators are introduced here.
 nested4.runCommand({ cmd: '多能' });
 
 if (!nested4.isComplete()) throw new Error("Failed Step 4");
