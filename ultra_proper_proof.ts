@@ -1,6 +1,6 @@
 import { ProofSession } from './proof-session.js';
-import { Expr, factToReadable, Fact } from './prover-core.js';
-
+import { Expr, factToReadable } from './prover-core.js';
+import type { Fact } from './prover-core.js';
 console.log("=== ULTRA-PROPER PROOF: START ===");
 
 // Setup variables and initial state
