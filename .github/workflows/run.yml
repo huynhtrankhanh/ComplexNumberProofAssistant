@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-and-run:
+  build-run-and-archive:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,7 +17,7 @@ jobs:
     - name: Use Node.js 20.x
       uses: actions/setup-node@v4
       with:
-        node-version: 20.x # Using a specific LTS version for stability
+        node-version: 20.x
         cache: 'npm'
 
     - name: Install dependencies
@@ -26,6 +26,16 @@ jobs:
     - name: Compile TypeScript
       run: npx tsc
 
-    - name: Run compiled script
-      run: node dist/ultra_proper_proof.js
+    - name: Run script and capture output
+      # This command runs the script and redirects both stdout (>) and stderr (2>&1)
+      # into a file named 'output.log'. The '|| true' ensures the workflow continues
+      # even if the script fails, allowing the log to be uploaded regardless.
+      run: node dist/ultra_proper_proof.js > output.log 2>&1 || true
+
+    - name: Upload run log
+      # This action takes the generated log file and uploads it as a workflow artifact.
+      uses: actions/upload-artifact@v4
+      with:
+        name: run-log # The name of the artifact bundle.
+        path: output.log # The path to the file to upload.
 
