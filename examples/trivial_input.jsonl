@@ -1,0 +1,1 @@
+{"hypotheses": {}, "goal": {"kind": "eq", "lhs": {"type": "var", "name": "x"}, "rhs": {"type": "var", "name": "x"}}}

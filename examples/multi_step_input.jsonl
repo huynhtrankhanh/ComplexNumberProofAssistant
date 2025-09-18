@@ -1,0 +1,1 @@
+{"hypotheses": {"assumption": {"kind": "eq", "lhs": {"type": "var", "name": "y"}, "rhs": {"type": "const", "value": 5}}}, "goal": {"kind": "eq", "lhs": {"type": "op", "op": "add", "args": [{"type": "var", "name": "y"}, {"type": "const", "value": 3}]}, "rhs": {"type": "const", "value": 8}}}

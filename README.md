@@ -21,6 +21,26 @@ Or for development with hot-reload:
 npm run dev
 ```
 
+## Batch Mode Validation
+
+The system supports batch mode processing using JSONL files:
+
+```bash
+# Run batch validation
+npm run batch-validate input.jsonl proof.jsonl
+
+# Example with provided samples  
+npm run batch-validate examples/simple_input.jsonl examples/simple_proof.jsonl
+```
+
+**Batch Mode Features:**
+- **Input File**: JSONL with hypotheses and goal
+- **Proof File**: JSONL with sequence of proof commands
+- **Error Reporting**: Detailed validation and execution errors
+- **Evaluation Score**: Tuple (error_count, proved) for automated assessment
+
+For detailed batch mode documentation, see `docs/BatchModeSemantics.md` and `examples/README.md`.
+
 ## Overview
 
 The Chinese Theorem Prover is a formal proof system where:

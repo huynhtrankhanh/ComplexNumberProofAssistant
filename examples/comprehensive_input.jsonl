@@ -1,0 +1,1 @@
+{"hypotheses": {"neq_hypothesis": {"kind": "neq", "lhs": {"type": "var", "name": "x"}, "rhs": {"type": "const", "value": 0}}}, "goal": {"kind": "eq", "lhs": {"type": "op", "op": "add", "args": [{"type": "op", "op": "div", "args": [{"type": "var", "name": "x"}, {"type": "var", "name": "x"}]}, {"type": "const", "value": 0}]}, "rhs": {"type": "const", "value": 1}}}
